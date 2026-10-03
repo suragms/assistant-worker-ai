@@ -49,6 +49,8 @@ screenshots/
 
 # Scratch & temporary logs
 .claude/
+MEMORY.md
+memory/*.md
 _out.txt
 _verify*.txt
 crash.txt

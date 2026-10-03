@@ -22,6 +22,7 @@ Assistant Worker is a personal AI desktop assistant designed specifically for Wi
 - **Reminders & Memory:** Local long-term recall and background reminder notification daemon.
 - **System Tray & Hotkeys:** Global push-to-talk shortcuts, tray minimization, and single-instance protection.
 - **Start with Windows:** Seamless automatic launch with Windows logon option.
+- **Persistent Settings:** Audio configurations, API preferences, and UI settings persist cleanly across application restarts.
 - **Windows Installer & Portable ZIP:** Available as both an Inno Setup installer wizard and a standalone portable zip archive.
 
 ---

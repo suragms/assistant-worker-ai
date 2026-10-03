@@ -1,6 +1,6 @@
 """
 Greeting Overlay - Displays startup greeting message
-Shows "Welcome to Jarvis Ai Assistant" with smooth fade animation using label opacity (not window opacity,
+Shows "Welcome to Assistant Worker" with smooth fade animation using label opacity (not window opacity,
 which only works on top-level windows).
 """
 

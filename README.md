@@ -71,11 +71,11 @@ The current Gemini Live API controls production speech rate, so the **Preview Sp
 
 ### Assistant Worker
 Main conversation interface with the right-side voice interaction panel.
-*(Expected screenshot path: `docs/screenshots/main-interface.png`)*
 
 ### Voice Interaction
 VoiceOrb, microphone level, transcription and voice controls.
-*(Expected screenshot path: `docs/screenshots/voice-panel.png`)*
+
+*(Recommended future locations: `docs/screenshots/main-interface.png` and `docs/screenshots/voice-panel.png`)*
 
 ---
 
