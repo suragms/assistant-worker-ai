@@ -1,0 +1,1 @@
+- [Rebrand Assistant Worker](memory/rebrand-assistant-worker.md) — rebranding to Assistant Worker
