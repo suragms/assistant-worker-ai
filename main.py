@@ -82,8 +82,9 @@ from memory.config_manager     import (
     get_brief_enabled, get_media_resolution, get_proactive_audio_enabled,
     get_push_to_talk_enabled, get_thinking_enabled, get_turn_tuning, get_voice,
     get_wake_word_enabled, save_wake_word_enabled, get_input_device, get_output_device,
-    get_tts_volume,
+    get_tts_volume, get_voice_mode, save_voice_mode,
 )
+from core.offline_fallback        import OfflineFallbackManager
 from core                     import gemini as _gemini
 from core.plugin_loader        import discover_plugins
 from core                      import undo as undo_stack
@@ -600,6 +601,8 @@ class AssistantWorkerLive:
         self.ui.on_voice_change   = self._on_voice_change     # voice picker → rebuild session
         self.ui.on_audio_device_change = self._on_audio_device_change
         self.ui.on_volume_change  = self._on_volume_change    # volume slider → scale PCM output
+        self._offline_mgr         = OfflineFallbackManager()
+        self._offline_active      = False
         self._reconnect_event: asyncio.Event | None = None
         self._reconnect_keep = True   # False → next rebuild drops the resumption handle
 
@@ -865,7 +868,16 @@ class AssistantWorkerLive:
         return url, key, f"{url}/auto-login?key={key}", manual
 
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        if not self._loop or not self.session or getattr(self, "_offline_active", False):
+            # Process via safe offline fallback manager
+            if hasattr(self, "_offline_mgr"):
+                resp, action = self._offline_mgr.handle_local_intent(text)
+                if resp:
+                    self.ui.write_log(f"{self._asst_name}: {resp}")
+                    self.ui.set_transcript(f"{self._asst_name}: {resp}")
+                    vol = int(getattr(self, "_target_volume", 1.0) * 100)
+                    threading.Thread(target=self._offline_mgr.speak, args=(resp, vol), daemon=True).start()
+                    return
             return
         # Respect wake-word sleep: a typed command must not be answered while
         # asleep either (the sleep gate is not just for the mic). Wake first with
@@ -1830,6 +1842,39 @@ class AssistantWorkerLive:
         name = _val("name")
         time_str = datetime.now().strftime("%H:%M")
 
+        # ── Safe Offline Adaptive Briefing ────────────────────────────────────
+        is_offline = (
+            getattr(self, "_offline_active", False) or
+            not self.session or
+            (hasattr(self, "_offline_mgr") and not self._offline_mgr.is_online())
+        )
+        if is_offline:
+            hour = datetime.now().hour
+            time_greeting = "Good morning" if hour < 12 else ("Good afternoon" if hour < 18 else "Good evening")
+            user_addr = f", {name}" if name else ""
+
+            batt_msg = ""
+            try:
+                import psutil
+                batt = psutil.sensors_battery()
+                if batt:
+                    pct = int(batt.percent)
+                    plugged = "plugged in" if getattr(batt, "power_plugged", False) else "on battery"
+                    batt_msg = f" Battery is at {pct}% and {plugged}."
+            except Exception:
+                pass
+
+            briefing_text = (
+                f"{time_greeting}{user_addr}. It is {time_str}. Assistant Worker is running in offline mode.{batt_msg} "
+                f"Local speech and system controls are ready."
+            )
+            self.ui.write_log(f"{self._asst_name}: {briefing_text}")
+            self.ui.set_transcript(f"{self._asst_name}: {briefing_text}")
+            vol = int(getattr(self, "_target_volume", 1.0) * 100)
+            if hasattr(self, "_offline_mgr"):
+                await asyncio.to_thread(self._offline_mgr.speak, briefing_text, vol)
+            return
+
         # Start fetching news immediately — runs in parallel while phase 1 plays
         loop = asyncio.get_event_loop()
         news_future = loop.run_in_executor(None, _fetch_news_sync, "top world news today")
@@ -2168,7 +2213,32 @@ class AssistantWorkerLive:
 
         while True:
             try:
-                print("[ASSISTANT] Connecting...")
+                voice_mode = get_voice_mode()
+                self._voice_mode = voice_mode
+                if voice_mode == "offline":
+                    self._offline_active = True
+                    self.ui.set_cloud_mode("OFFLINE")
+                    self.ui.set_state("READY")
+                    self.ui.write_log(f"SYS: {self._asst_name} running in OFFLINE mode.")
+                    if not getattr(self, "_briefing_done", False):
+                        self._briefing_done = True
+                        asyncio.create_task(self._send_startup_briefing())
+                    while get_voice_mode() == "offline":
+                        await asyncio.sleep(1.0)
+                    self._offline_active = False
+                    continue
+
+                # Safe engine transition: never switch or connect while audio is active
+                while getattr(self, "_is_speaking", False) or self._tail_active():
+                    await asyncio.sleep(0.1)
+
+                is_reconnect = getattr(self, "_reconnect_attempt", 0) > 0
+                if is_reconnect:
+                    self.ui.set_cloud_mode("RECONNECTING")
+                    print(f"[ASSISTANT] Reconnecting to Gemini Live (attempt {self._reconnect_attempt})...")
+                else:
+                    self.ui.set_cloud_mode("CONNECTING")
+                    print("[ASSISTANT] Connecting to Gemini Live...")
                 self.ui.set_state("THINKING")
                 # Pick the rung to open the conversation on. A model resting
                 # off a quota limit is skipped; the name is published back to
@@ -2206,6 +2276,11 @@ class AssistantWorkerLive:
                     self._vision_last_time     = 0.0
                     self._interrupted          = False
 
+                    self._offline_active       = False
+                    self._reconnect_attempt    = 0
+                    if hasattr(self, "_offline_mgr"):
+                        self._offline_mgr.backoff.reset()
+                    self.ui.set_cloud_mode("CLOUD")
                     print("[ASSISTANT] Connected.")
                     if _resumed_with:
                         # Say it plainly: the difference between "it reconnected"
@@ -2349,33 +2424,65 @@ class AssistantWorkerLive:
                     _conn_backoff = 3
                     continue
 
-                # Network / timeout errors — log clearly and back off
+                # Network / timeout errors — log clearly and back off with stepped schedule & anti-flapping
                 is_net_err = any(k in err_str for k in (
                     "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
-                    "ConnectionRefusedError", "OSError", "Cannot connect",
+                    "ConnectionRefusedError", "OSError", "Cannot connect", "socket",
                 ))
                 if is_net_err:
-                    _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
-                    self._conn_backoff = _conn_backoff
-                    self.ui.write_log(
-                        f"NET: Connection failed — retrying in {_conn_backoff}s. "
-                        "(a VPN may be required)"
-                    )
+                    self._reconnect_attempt = getattr(self, "_reconnect_attempt", 0) + 1
+                    delay = self._offline_mgr.backoff.next_delay() if hasattr(self, "_offline_mgr") else 5
+                    self._conn_backoff = delay
+                    if getattr(self, "_voice_mode", "automatic") == "automatic":
+                        self._offline_active = True
+                        self.ui.set_cloud_mode("OFFLINE")
+                        self.ui.set_state("READY")
+                        self.ui.write_log(
+                            f"SYS: Cloud connection unavailable — switched to OFFLINE mode (retry {self._reconnect_attempt} in {delay}s)."
+                        )
+                        if not getattr(self, "_briefing_done", False):
+                            self._briefing_done = True
+                            asyncio.create_task(self._send_startup_briefing())
+
+                        # Flap-protected wait loop
+                        waited = 0
+                        while get_voice_mode() == "automatic" and not self._offline_mgr.check_connectivity():
+                            await asyncio.sleep(min(3.0, delay))
+                            waited += 3
+                            if waited >= delay:
+                                break
+
+                        if self._offline_mgr.is_online():
+                            self._offline_active = False
+                            self.ui.write_log("SYS: Stable connection restored — reconnecting to Gemini Live...")
+                            self.ui.set_cloud_mode("RECONNECTING")
+                            continue
+                    else:
+                        self.ui.write_log(
+                            f"NET: Connection failed — retrying in {delay}s. "
+                            "(a VPN may be required)"
+                        )
                 else:
-                    self._conn_backoff = 3
+                    if hasattr(self, "_offline_mgr"):
+                        self._offline_mgr.backoff.reset()
+                    self._conn_backoff = 5
             finally:
                 self.session = None
                 # Only save if there was a real conversation (≥3 turns)
                 if len(self._session_log) >= 3:
                     asyncio.create_task(self._save_session_summary())
 
+            # Safe engine transition: ensure audio is stopped before restarting
             self.set_speaking(False)
+            while getattr(self, "_is_speaking", False) or self._tail_active():
+                await asyncio.sleep(0.1)
             self.ui.set_state("SLEEPING")
 
             if self._dashboard:
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
 
-            delay = getattr(self, "_conn_backoff", 3)
+            delay = getattr(self, "_conn_backoff", 5)
+            self.ui.set_cloud_mode("RECONNECTING")
             print(f"[ASSISTANT] Reconnecting in {delay}s...")
             await asyncio.sleep(delay)
 

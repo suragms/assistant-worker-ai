@@ -350,6 +350,34 @@ def _patch_config(**fields) -> None:
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
 
+def get_voice_mode() -> str:
+    """Return voice mode: 'automatic', 'cloud', or 'offline'."""
+    v = str(load_api_keys().get("voice_mode", "automatic")).strip().lower()
+    return v if v in ("automatic", "cloud", "offline") else "automatic"
+
+
+def save_voice_mode(mode: str) -> None:
+    m = str(mode or "").strip().lower()
+    _save_flag("voice_mode", m if m in ("automatic", "cloud", "offline") else "automatic")
+
+
+def get_offline_stt_backend() -> str:
+    return str(load_api_keys().get("offline_stt_backend", "whisper")).strip().lower()
+
+
+def save_offline_stt_backend(backend: str) -> None:
+    _save_flag("offline_stt_backend", str(backend or "whisper").strip().lower())
+
+
+def get_offline_tts_backend() -> str:
+    return str(load_api_keys().get("offline_tts_backend", "pyttsx3")).strip().lower()
+
+
+def save_offline_tts_backend(backend: str) -> None:
+    _save_flag("offline_tts_backend", str(backend or "pyttsx3").strip().lower())
+
+
+
 def get_input_device() -> str:
     """Microphone device name, or '' for the system default."""
     return (load_api_keys().get("input_device", "") or "").strip()

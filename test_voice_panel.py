@@ -193,10 +193,67 @@ def test_ui_and_voice_panel():
     assert abs(get_tts_speed() - 0.8) < 0.01, f"Expected 0.8 in config, got {get_tts_speed()}"
     print("  -> Speech Rate combo wiring verified.")
 
+    # 11. Mode badge and Cloud/Offline toggling
+    print("[11/12] Testing Cloud / Offline mode badge...")
+    ui.set_cloud_mode(True)
+    app.processEvents()
+    assert "CLOUD" in win._voice_indicator_dot.text().upper()
+
+    ui.set_cloud_mode(False)
+    app.processEvents()
+    assert "OFFLINE" in win._voice_indicator_dot.text().upper()
+
+    ui.set_cloud_mode(True)
+    app.processEvents()
+    assert "CLOUD" in win._voice_indicator_dot.text().upper()
+    print("  -> Cloud / Offline mode badge verified.")
+
     print("\nALL VOICE UX & HARDWARE TESTS PASSED SUCCESSFULLY!")
+    return True
+
+
+def test_offline_fallback():
+    print("[12/12] Testing Offline Fallback Engine & Local Intents...")
+    from memory.config_manager import get_voice_mode, save_voice_mode
+    orig_mode = get_voice_mode()
+    save_voice_mode("offline")
+    assert get_voice_mode() == "offline", "Failed saving voice mode 'offline'"
+    save_voice_mode("cloud")
+    assert get_voice_mode() == "cloud", "Failed saving voice mode 'cloud'"
+    save_voice_mode("automatic")
+    assert get_voice_mode() == "automatic", "Failed saving voice mode 'automatic'"
+    save_voice_mode(orig_mode)
+
+    from core.offline_fallback import OfflineFallbackManager
+    mgr = OfflineFallbackManager()
+    mgr.set_mode("offline")
+    assert not mgr.check_connectivity(), "Offline mode should report offline"
+
+    # Test local commands intent routing
+    resp_calc, action_calc = mgr.handle_local_intent("open calculator")
+    assert "Calculator" in resp_calc, f"Expected Calculator response, got {resp_calc}"
+    assert action_calc == "open_calc"
+
+    resp_batt, action_batt = mgr.handle_local_intent("what is my battery level?")
+    assert "Battery" in resp_batt or "battery" in resp_batt.lower(), f"Unexpected battery response: {resp_batt}"
+
+    resp_sys, action_sys = mgr.handle_local_intent("check system status")
+    assert "CPU" in resp_sys or "usage" in resp_sys, f"Unexpected system status response: {resp_sys}"
+
+    resp_gen, action_gen = mgr.handle_local_intent("explain quantum computing")
+    assert "offline" in resp_gen.lower(), f"Expected offline general response, got: {resp_gen}"
+
+    # Test Offline STT backend class
+    from core.stt import SpeechRecognizerBackend
+    stt_backend = SpeechRecognizerBackend(engine="whisper")
+    assert stt_backend.engine_name == "whisper"
+    print("  -> Offline SpeechRecognizerBackend initialized safely.")
+
+    print("  -> Offline Fallback Engine & Local Intents verified successfully.")
     return True
 
 
 if __name__ == "__main__":
     test_clean_tts_text()
     test_ui_and_voice_panel()
+    test_offline_fallback()

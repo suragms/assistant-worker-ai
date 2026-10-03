@@ -56,3 +56,11 @@ _verify*.txt
 crash.txt
 err.txt
 output.txt
+
+# Offline AI & speech models
+models/
+*.bin
+*.gguf
+*.onnx
+vosk-model*/
+

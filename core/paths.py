@@ -91,8 +91,9 @@ DATA_DIR        = USER_DATA_DIR
 CONFIG_DIR      = USER_DATA_DIR / "config"
 USER_MEMORY_DIR = USER_DATA_DIR / "memory"
 LOGS_DIR        = USER_DATA_DIR / "logs"
+MODELS_DIR      = USER_DATA_DIR / "models"
 
-for _d in (CONFIG_DIR, USER_MEMORY_DIR, LOGS_DIR):
+for _d in (CONFIG_DIR, USER_MEMORY_DIR, LOGS_DIR, MODELS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = CONFIG_DIR / "api_keys.json"

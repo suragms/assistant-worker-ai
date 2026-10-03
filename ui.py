@@ -29,7 +29,7 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.multimedia.*=false")
 from PyQt6.QtCore import (
     QEasingCurve, QLineF, QMimeData, QObject, QParallelAnimationGroup, QPointF,
     QPoint, QPropertyAnimation, QRect, QRectF, QSize, QSizeF, Qt, QTimer,
-    QUrl, pyqtSignal,
+    QUrl, pyqtSignal, QThread,
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QConicalGradient, QDragEnterEvent, QDropEvent, QFont,
@@ -2140,12 +2140,44 @@ class AudioDeviceOverlay(_HudOverlay):
         self._out_box = _row("SPEAKERS — what Assistant Worker talks through",
                              "output", get_output_device())
 
+        lay.addSpacing(4)
+        from memory.config_manager import get_voice_mode, save_voice_mode
+        cap_vm = QLabel("VOICE MODE — Cloud (Gemini Live) or local offline fallback")
+        cap_vm.setFont(QFont("Courier New", 8))
+        cap_vm.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        lay.addWidget(cap_vm)
+
+        self._mode_box = QComboBox()
+        self._mode_box.setFont(QFont("Courier New", 9))
+        self._mode_box.setFixedHeight(30)
+        self._mode_box.setStyleSheet(_combo_css)
+        self._mode_box.addItem("Automatic (Cloud when online, Offline when offline)", "automatic")
+        self._mode_box.addItem("Cloud Only (Gemini Live)", "cloud")
+        self._mode_box.addItem("Offline Only (Local Windows TTS + Offline STT)", "offline")
+        cur_vm = get_voice_mode()
+        vm_idx = self._mode_box.findData(cur_vm)
+        self._mode_box.setCurrentIndex(vm_idx if vm_idx >= 0 else 0)
+        lay.addWidget(self._mode_box)
+
         note = QLabel("Applying reconnects the session. Your conversation is kept.")
         note.setWordWrap(True)
         note.setFont(QFont("Courier New", 7))
         note.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
         lay.addSpacing(6)
         lay.addWidget(note)
+
+        models_link = QPushButton("📥  MANAGE OFFLINE SPEECH MODELS...")
+        models_link.setFixedHeight(28)
+        models_link.setFont(QFont("Courier New", 8))
+        models_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        models_link.setStyleSheet(f"""
+            QPushButton {{ background: #000d12; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px; }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
+        """)
+        models_link.clicked.connect(self._open_models_overlay)
+        lay.addWidget(models_link)
+        lay.addSpacing(4)
 
         row = QHBoxLayout(); row.setSpacing(8)
         ok = QPushButton("▸  APPLY")
@@ -2173,21 +2205,328 @@ class AudioDeviceOverlay(_HudOverlay):
         row.addWidget(cancel)
         lay.addLayout(row)
 
+    def _open_models_overlay(self):
+        self.hide()
+        p = self.parentWidget()
+        if p and hasattr(p.window(), "_open_offline_models"):
+            p.window()._open_offline_models()
+
     def _apply(self):
         from memory.config_manager import (
             get_input_device, get_output_device,
             save_input_device, save_output_device,
+            get_voice_mode, save_voice_mode,
         )
         new_in  = self._in_box.currentData()  or ""
         new_out = self._out_box.currentData() or ""
-        changed = (new_in != get_input_device()) or (new_out != get_output_device())
+        new_vm  = self._mode_box.currentData() or "automatic"
+        changed = (new_in != get_input_device()) or (new_out != get_output_device()) or (new_vm != get_voice_mode())
         save_input_device(new_in)
         save_output_device(new_out)
+        save_voice_mode(new_vm)
         self.hide()
         # Only rebuild the session if something actually moved — a no-op Apply
         # should not cost a reconnect.
         if changed:
             self.picked.emit()
+
+
+class _ModelDownloadThread(QThread):
+    progress = pyqtSignal(str, int, int, int)  # (model_key, downloaded_bytes, total_bytes, percent)
+    finished = pyqtSignal(str, bool, str)      # (model_key, success, message)
+
+    def __init__(self, manager, model_key: str, cancel_token, parent=None):
+        super().__init__(parent)
+        self.manager = manager
+        self.model_key = model_key
+        self.cancel_token = cancel_token
+
+    def run(self):
+        try:
+            def _cb(dl: int, tot: int, pct: int):
+                self.progress.emit(self.model_key, dl, tot, pct)
+
+            ok = self.manager.download_model(
+                self.model_key,
+                progress_cb=_cb,
+                cancel_token=self.cancel_token,
+            )
+            if ok:
+                self.finished.emit(self.model_key, True, "Download completed successfully.")
+            else:
+                self.finished.emit(self.model_key, False, "Download was cancelled or incomplete.")
+        except Exception as e:
+            self.finished.emit(self.model_key, False, str(e))
+
+
+class OfflineModelsOverlay(_HudOverlay):
+    """Manage offline speech recognition models (Vosk and Whisper)."""
+    _OW = 540
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from core.offline_fallback import ModelManager, CancellationToken
+        self._manager = ModelManager()
+        self._active_threads: dict[str, _ModelDownloadThread] = {}
+        self._cancel_tokens: dict[str, CancellationToken] = {}
+        self._model_cards: dict[str, dict] = {}
+
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            OfflineModelsOverlay {{
+                background: rgba(0, 6, 10, 248);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 6px;
+            }}
+        """)
+        self.setFixedWidth(self._OW)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setSpacing(6)
+
+        hdr_row = QHBoxLayout()
+        hdr = QLabel("📥  OFFLINE SPEECH MODELS")
+        hdr.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        hdr.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        hdr_row.addWidget(hdr)
+        hdr_row.addStretch()
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED}; border: none; }}
+            QPushButton:hover {{ color: {C.PRI}; }}
+        """)
+        close_btn.clicked.connect(self.hide)
+        hdr_row.addWidget(close_btn)
+        lay.addLayout(hdr_row)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        lay.addWidget(sep)
+
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
+        self._storage_lbl = QLabel()
+        self._storage_lbl.setFont(QFont("Courier New", 8))
+        self._storage_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        meta_row.addWidget(self._storage_lbl)
+        meta_row.addStretch()
+
+        open_folder_btn = QPushButton("📂  OPEN MODELS FOLDER")
+        open_folder_btn.setFixedHeight(24)
+        open_folder_btn.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_folder_btn.setStyleSheet(f"""
+            QPushButton {{ background: #000d12; color: {C.PRI};
+                border: 1px solid {C.PRI_DIM}; border-radius: 3px; padding: 0 8px; }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
+        """)
+        open_folder_btn.clicked.connect(self._manager.open_models_folder)
+        meta_row.addWidget(open_folder_btn)
+        lay.addLayout(meta_row)
+
+        lay.addSpacing(4)
+
+        self._cards_layout = QVBoxLayout()
+        self._cards_layout.setSpacing(8)
+        lay.addLayout(self._cards_layout)
+
+        for m in self._manager.list_models():
+            card_w = self._create_model_card(m)
+            self._cards_layout.addWidget(card_w)
+
+        self._update_storage_summary()
+
+        lay.addSpacing(6)
+        bot_row = QHBoxLayout()
+        bot_row.addStretch()
+        done_btn = QPushButton("CLOSE")
+        done_btn.setFixedSize(90, 28)
+        done_btn.setFont(QFont("Courier New", 8))
+        done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        done_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 3px; }}
+            QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
+        """)
+        done_btn.clicked.connect(self.hide)
+        bot_row.addWidget(done_btn)
+        lay.addLayout(bot_row)
+
+    def _create_model_card(self, meta: dict) -> QWidget:
+        key = meta["key"]
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: #000c14;
+                border: 1px solid {C.BORDER};
+                border-radius: 4px;
+                padding: 6px;
+            }}
+        """)
+        c_lay = QVBoxLayout(card)
+        c_lay.setContentsMargins(8, 6, 8, 6)
+        c_lay.setSpacing(4)
+
+        top = QHBoxLayout()
+        name_lbl = QLabel(meta["name"])
+        name_lbl.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        name_lbl.setStyleSheet(f"color: {C.TEXT}; background: transparent;")
+        top.addWidget(name_lbl)
+        top.addStretch()
+
+        status_lbl = QLabel()
+        status_lbl.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        top.addWidget(status_lbl)
+        c_lay.addLayout(top)
+
+        desc_lbl = QLabel(meta["description"])
+        desc_lbl.setWordWrap(True)
+        desc_lbl.setFont(QFont("Courier New", 7))
+        desc_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        c_lay.addWidget(desc_lbl)
+
+        pbar = QProgressBar()
+        pbar.setFixedHeight(6)
+        pbar.setTextVisible(False)
+        pbar.setStyleSheet(f"""
+            QProgressBar {{ background: #00121a; border: none; border-radius: 3px; }}
+            QProgressBar::chunk {{ background: {C.PRI}; border-radius: 3px; }}
+        """)
+        pbar.hide()
+        c_lay.addWidget(pbar)
+
+        p_lbl = QLabel()
+        p_lbl.setFont(QFont("Courier New", 7))
+        p_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        p_lbl.hide()
+        c_lay.addWidget(p_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        action_btn = QPushButton()
+        action_btn.setFixedHeight(24)
+        action_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_row.addWidget(action_btn)
+        c_lay.addLayout(btn_row)
+
+        self._model_cards[key] = {
+            "widget": card,
+            "status_lbl": status_lbl,
+            "pbar": pbar,
+            "p_lbl": p_lbl,
+            "action_btn": action_btn,
+            "meta": meta,
+        }
+
+        self._refresh_card(key)
+        return card
+
+    def _refresh_card(self, key: str):
+        card_data = self._model_cards.get(key)
+        if not card_data:
+            return
+
+        status_lbl = card_data["status_lbl"]
+        pbar = card_data["pbar"]
+        p_lbl = card_data["p_lbl"]
+        action_btn = card_data["action_btn"]
+
+        installed = self._manager.is_installed(key)
+        is_downloading = key in self._active_threads
+
+        if is_downloading:
+            status_lbl.setText("● DOWNLOADING")
+            status_lbl.setStyleSheet("color: #06b6d4; background: transparent;")
+            pbar.show()
+            p_lbl.show()
+            action_btn.setText("CANCEL")
+            action_btn.setStyleSheet(f"""
+                QPushButton {{ background: #20000a; color: {C.MUTED_C};
+                    border: 1px solid {C.MUTED_C}; border-radius: 3px; padding: 0 10px; }}
+                QPushButton:hover {{ background: #350010; }}
+            """)
+            try: action_btn.clicked.disconnect()
+            except Exception: pass
+            action_btn.clicked.connect(lambda _, k=key: self._cancel_download(k))
+        elif installed:
+            sz = self._manager.get_model_size_mb(key)
+            status_lbl.setText(f"● INSTALLED ({sz} MB)")
+            status_lbl.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
+            pbar.hide()
+            p_lbl.hide()
+            action_btn.setText("DELETE")
+            action_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; color: {C.TEXT_DIM};
+                    border: 1px solid {C.BORDER}; border-radius: 3px; padding: 0 10px; }}
+                QPushButton:hover {{ color: #ef4444; border-color: #ef4444; }}
+            """)
+            try: action_btn.clicked.disconnect()
+            except Exception: pass
+            action_btn.clicked.connect(lambda _, k=key: self._delete_model(k))
+        else:
+            status_lbl.setText("○ NOT INSTALLED")
+            status_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+            pbar.hide()
+            p_lbl.hide()
+            action_btn.setText("DOWNLOAD")
+            action_btn.setStyleSheet(f"""
+                QPushButton {{ background: #00140a; color: {C.GREEN};
+                    border: 1px solid {C.GREEN}; border-radius: 3px; padding: 0 10px; }}
+                QPushButton:hover {{ background: #002514; }}
+            """)
+            try: action_btn.clicked.disconnect()
+            except Exception: pass
+            action_btn.clicked.connect(lambda _, k=key: self._start_download(k))
+
+    def _update_storage_summary(self):
+        tot = self._manager.get_total_models_size_mb()
+        self._storage_lbl.setText(f"Disk used: {tot:.1f} MB in %LOCALAPPDATA%\\AssistantWorker\\models\\")
+
+    def _start_download(self, key: str):
+        from core.offline_fallback import CancellationToken
+        if key in self._active_threads:
+            return
+        token = CancellationToken()
+        self._cancel_tokens[key] = token
+        thread = _ModelDownloadThread(self._manager, key, token, parent=self)
+        thread.progress.connect(self._on_download_progress)
+        thread.finished.connect(self._on_download_finished)
+        self._active_threads[key] = thread
+        thread.start()
+        self._refresh_card(key)
+
+    def _cancel_download(self, key: str):
+        token = self._cancel_tokens.get(key)
+        if token:
+            token.cancel()
+
+    def _delete_model(self, key: str):
+        self._manager.delete_model(key)
+        self._refresh_card(key)
+        self._update_storage_summary()
+
+    def _on_download_progress(self, key: str, dl: int, tot: int, pct: int):
+        card = self._model_cards.get(key)
+        if card:
+            card["pbar"].setValue(pct)
+            dl_mb = dl / (1024 * 1024)
+            tot_mb = tot / (1024 * 1024)
+            card["p_lbl"].setText(f"Downloading: {dl_mb:.1f} MB / {tot_mb:.1f} MB ({pct}%)")
+
+    def _on_download_finished(self, key: str, ok: bool, msg: str):
+        if key in self._active_threads:
+            del self._active_threads[key]
+        if key in self._cancel_tokens:
+            del self._cancel_tokens[key]
+        self._refresh_card(key)
+        self._update_storage_summary()
 
 
 class MemoryOverlay(_HudOverlay):
@@ -2976,6 +3315,7 @@ class AssistantWorkerWindow(QMainWindow):
     _quiz_hide_sig  = pyqtSignal()
     _review_sig     = pyqtSignal(str, str, object, object)  # document review payload
     _transcript_sig = pyqtSignal(str)                  # live transcription text (thread-safe)
+    _mode_sig       = pyqtSignal(object)               # online/offline/connecting/reconnecting mode badge (thread-safe)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -3188,6 +3528,7 @@ class AssistantWorkerWindow(QMainWindow):
         self._quiz_hide_sig.connect(self._hide_quiz)
         self._review_sig.connect(self._show_review)
         self._transcript_sig.connect(self._apply_transcript)
+        self._mode_sig.connect(self._apply_mode)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -4189,9 +4530,10 @@ class AssistantWorkerWindow(QMainWindow):
         hdr_box.addWidget(hdr_lbl)
         hdr_box.addStretch()
 
-        self._voice_indicator_dot = QLabel("● LIVE")
+        self._voice_indicator_dot = QLabel("● CLOUD")
         self._voice_indicator_dot.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
         self._voice_indicator_dot.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
+        self._voice_indicator_dot.setToolTip("Cloud voice active (Gemini Live)")
         hdr_box.addWidget(self._voice_indicator_dot)
         lay.addLayout(hdr_box)
 
@@ -4624,6 +4966,40 @@ class AssistantWorkerWindow(QMainWindow):
             if sb:
                 sb.setValue(sb.maximum())
 
+    def _apply_mode(self, mode: object):
+        """Thread-safe slot: update cloud/offline mode indicator badge and tray tooltip."""
+        if isinstance(mode, bool):
+            m = "CLOUD" if mode else "OFFLINE"
+        else:
+            m = str(mode or "CLOUD").upper().strip()
+
+        if hasattr(self, "_voice_indicator_dot") and self._voice_indicator_dot:
+            asst = getattr(self, "_assistant_name", "Assistant Worker")
+            if m == "CLOUD":
+                self._voice_indicator_dot.setText("● CLOUD")
+                self._voice_indicator_dot.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
+                self._voice_indicator_dot.setToolTip("Cloud voice active (Gemini Live)")
+                if hasattr(self, "_tray") and self._tray:
+                    self._tray.setToolTip(f"{asst} — Cloud Mode (Gemini Live)")
+            elif m == "OFFLINE":
+                self._voice_indicator_dot.setText("● OFFLINE")
+                self._voice_indicator_dot.setStyleSheet("color: #f59e0b; background: transparent;")
+                self._voice_indicator_dot.setToolTip("Offline mode active (Local speech & actions)")
+                if hasattr(self, "_tray") and self._tray:
+                    self._tray.setToolTip(f"{asst} — Offline Mode (Local speech & actions)")
+            elif m == "CONNECTING":
+                self._voice_indicator_dot.setText("● CONNECTING")
+                self._voice_indicator_dot.setStyleSheet("color: #06b6d4; background: transparent;")
+                self._voice_indicator_dot.setToolTip("Connecting to Gemini Live...")
+                if hasattr(self, "_tray") and self._tray:
+                    self._tray.setToolTip(f"{asst} — Connecting to Gemini Live...")
+            elif m == "RECONNECTING":
+                self._voice_indicator_dot.setText("● RECONNECTING")
+                self._voice_indicator_dot.setStyleSheet("color: #a855f7; background: transparent;")
+                self._voice_indicator_dot.setToolTip("Reconnecting to cloud services...")
+                if hasattr(self, "_tray") and self._tray:
+                    self._tray.setToolTip(f"{asst} — Reconnecting to cloud services...")
+
     def set_audio_level(self, level: float) -> None:
         """Update live audio level (0.0 to 1.0) on HUD, VoiceOrb, and mic level bar."""
         try:
@@ -4720,6 +5096,14 @@ class AssistantWorkerWindow(QMainWindow):
         audio_btn.setStyleSheet(_BTN_STYLE_DIM)
         audio_btn.clicked.connect(self._open_audio_devices)
         lay.addWidget(audio_btn)
+
+        models_btn = QPushButton("📥  OFFLINE MODELS")
+        models_btn.setFixedHeight(26)
+        models_btn.setFont(QFont("Courier New", 7))
+        models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        models_btn.setStyleSheet(_BTN_STYLE_DIM)
+        models_btn.clicked.connect(self._open_offline_models)
+        lay.addWidget(models_btn)
 
         mem_btn = QPushButton("🧠  MEMORY")
         mem_btn.setFixedHeight(26)
@@ -5883,6 +6267,11 @@ class AssistantWorkerWindow(QMainWindow):
         self._centre_overlay(ov)
         self._audio_overlay = ov            # keep a reference so it isn't GC'd
 
+    def _open_offline_models(self):
+        ov = OfflineModelsOverlay(parent=self.centralWidget())
+        self._centre_overlay(ov)
+        self._models_overlay = ov
+
     def _on_audio_devices_applied(self):
         self._log.append_log("SYS: Audio devices updated.")
         if self.on_audio_device_change:
@@ -6025,9 +6414,6 @@ class AssistantWorkerWindow(QMainWindow):
                         border: 1px solid {C.MUTED_C}; border-radius: 19px;
                     }}
                 """)
-            if hasattr(self, "_voice_indicator_dot") and self._voice_indicator_dot:
-                self._voice_indicator_dot.setText("● MUTED")
-                self._voice_indicator_dot.setStyleSheet(f"color: {C.MUTED_C}; background: transparent;")
         else:
             if hasattr(self, "_mute_btn") and self._mute_btn:
                 self._mute_btn.setText("🎙  MICROPHONE ACTIVE")
@@ -6052,9 +6438,6 @@ class AssistantWorkerWindow(QMainWindow):
                         border-color: {C.PRI}; background: {C.PRI_GHO};
                     }}
                 """)
-            if hasattr(self, "_voice_indicator_dot") and self._voice_indicator_dot:
-                self._voice_indicator_dot.setText("● LIVE")
-                self._voice_indicator_dot.setStyleSheet(f"color: {C.GREEN}; background: transparent;")
 
     def _send(self):
         txt = self._input.text().strip()
@@ -6316,6 +6699,14 @@ class AssistantWorkerUI:
     def set_transcript(self, text: str) -> None:
         """Thread-safe: append text to live transcription display in voice panel."""
         self._win._transcript_sig.emit(str(text))
+
+    def set_cloud_mode(self, mode: bool | str, detail: str = "") -> None:
+        """Thread-safe: update cloud/offline mode indicator badge."""
+        if isinstance(mode, bool):
+            mode_str = "CLOUD" if mode else "OFFLINE"
+        else:
+            mode_str = str(mode or "CLOUD").upper().strip()
+        self._win._mode_sig.emit(mode_str)
 
     def set_voice_state(self, state: str) -> None:
         """Thread-safe: update assistant voice state."""
