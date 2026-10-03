@@ -97,7 +97,7 @@ if (Test-Path $exePath) {
 # ── Optional: Inno Setup installer ───────────────────────────────────────
 if ($Installer -and -not $Debug) {
     $isccCandidates = @(
-        "C:\Users\SURAG\AppData\Local\Programs\Antigravity IDE\resources\app\node_modules\innosetup\bin\ISCC.exe",
+        "$env:LOCALAPPDATA\Programs\Antigravity IDE\resources\app\node_modules\innosetup\bin\ISCC.exe",
         "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         "C:\Program Files\Inno Setup 6\ISCC.exe"
     )
