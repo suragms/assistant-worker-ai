@@ -3031,11 +3031,23 @@ class AssistantWorkerWindow(QMainWindow):
         # Re-initialize the stack for camera/video calls (even if not in layout)
         self._hud_cam_stack = QStackedWidget()
         self._hud_cam_stack.addWidget(self.hud)
-        # (Camera/video container initialization would go here; if they aren't initialized
-        # in __init__ in some other way, this will be incomplete, but
-        # the previous grep didn't show them being used in other methods like the hud was.
-        # Let's hope this is enough!)
         self._hud_cam_stack.hide()
+
+        # Camera & video playback state
+        self._cam_live_lbl: QLabel | None = None
+        self._video_player = None
+        self._video_sound = None
+        self._video_sound_out = None
+        self._video_audio = None
+        self._video_sync = None
+        self._video_title = QLabel()
+        self._video_mute_btn = QPushButton()
+        self._video_item = None
+        self._video_widget = None
+        self._video_scene = None
+        self._video_split = False
+        self._video_on = False
+        self._video_auto_muted = False
 
         # Load avatar
         self._avatar_path = face_path
@@ -3318,23 +3330,37 @@ class AssistantWorkerWindow(QMainWindow):
                 pass
 
     def _on_cam_stream(self, start: bool) -> None:
+        stack = getattr(self, "_hud_cam_stack", None)
+        lbl = getattr(self, "_cam_live_lbl", None)
         if start:
-            self._hud_cam_stack.setCurrentIndex(1)
+            if stack and stack.count() > 1:
+                stack.setCurrentIndex(1)
         else:
-            self._hud_cam_stack.setCurrentIndex(0)
-            self._cam_live_lbl.clear()
+            if stack and stack.count() > 0:
+                stack.setCurrentIndex(0)
+            if lbl is not None:
+                try:
+                    lbl.clear()
+                except Exception:
+                    pass
 
     def _on_cam_frame(self, data: bytes) -> None:
+        lbl = getattr(self, "_cam_live_lbl", None)
+        if lbl is None:
+            return
         px = QPixmap()
         px.loadFromData(data)
         if not px.isNull():
-            w, h = self._cam_live_lbl.width(), self._cam_live_lbl.height()
-            if w > 1 and h > 1:
-                self._cam_live_lbl.setPixmap(
-                    px.scaled(w, h,
-                              Qt.AspectRatioMode.KeepAspectRatio,
-                              Qt.TransformationMode.SmoothTransformation)
-                )
+            try:
+                w, h = lbl.width(), lbl.height()
+                if w > 1 and h > 1:
+                    lbl.setPixmap(
+                        px.scaled(w, h,
+                                  Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+                    )
+            except Exception:
+                pass
 
     def start_camera_stream(self) -> None:
         self._cam_stop.clear()
@@ -3386,71 +3412,86 @@ class AssistantWorkerWindow(QMainWindow):
     # background thread never touches a widget.
     def _on_video_open(self, source: str, title: str, muted: bool,
                        audio_source: str = "") -> None:
-        if not HAVE_VIDEO or not self._video_player:
-            self.write_log("SYS: Video playback is not available in this Qt "
-                           "install.")
-            return
-        # A video and the live camera cannot share the centre of the HUD.
-        self._cam_stop.set()
+        try:
+            if not HAVE_VIDEO or not getattr(self, "_video_player", None):
+                self.write_log("SYS: Embedded video playback is not available.")
+                return
+            self._cam_stop.set()
+            if getattr(self, "_video_title", None):
+                self._video_title.setText(f"▶  {(title or 'VIDEO')[:44].upper()}")
+            self._video_split = bool(audio_source)
+            self._set_video_muted(bool(muted))
 
-        self._video_title.setText(f"▶  {(title or 'VIDEO')[:44].upper()}")
-        self._video_split = bool(audio_source)
-        self._set_video_muted(bool(muted))
-
-        url = (QUrl.fromLocalFile(source) if Path(source).exists()
-               else QUrl(source))
-        self._video_player.setSource(url)
-        if self._video_split:
-            self._video_sound.setSource(QUrl(audio_source))
-        self._hud_cam_stack.setCurrentIndex(2)
-        self._video_on = True
-        # Re-run now that the video counts as playing: _set_video_muted ran
-        # before this line and saw no video, so its mic check was a no-op.
-        self._sync_mic_for_video()
-        self._video_player.play()
-        if self._video_split:
-            self._video_sound.play()
-            self._video_sync.start()
+            url = (QUrl.fromLocalFile(source) if Path(source).exists()
+                   else QUrl(source))
+            if getattr(self, "_video_player", None):
+                self._video_player.setSource(url)
+            if self._video_split and getattr(self, "_video_sound", None):
+                self._video_sound.setSource(QUrl(audio_source))
+            stack = getattr(self, "_hud_cam_stack", None)
+            if stack and stack.count() > 2:
+                stack.setCurrentIndex(2)
+            self._video_on = True
+            self._sync_mic_for_video()
+            if getattr(self, "_video_player", None):
+                self._video_player.play()
+            if self._video_split and getattr(self, "_video_sound", None):
+                self._video_sound.play()
+                if getattr(self, "_video_sync", None):
+                    self._video_sync.start()
+        except Exception as e:
+            self.write_log(f"SYS: Video error: {e}")
 
     def _fit_video(self, *_a) -> None:
         """Size the picture to the panel, keeping its shape."""
-        if not (getattr(self, '_video_item', None) and getattr(self, '_video_widget', None)):
+        item = getattr(self, '_video_item', None)
+        widget = getattr(self, '_video_widget', None)
+        scene = getattr(self, '_video_scene', None)
+        if not (item and widget and scene):
             return
         try:
-            native = self._video_item.nativeSize()
+            native = item.nativeSize()
             if native.isEmpty():
                 return
-            view = self._video_widget.viewport().size()
-            scale = min(view.width() / native.width(),
-                        view.height() / native.height())
+            view = widget.viewport().size()
+            scale = min(view.width() / max(1.0, native.width()),
+                        view.height() / max(1.0, native.height()))
             w, h = native.width() * scale, native.height() * scale
-            self._video_item.setSize(QSizeF(w, h))
-            self._video_scene.setSceneRect(0, 0, w, h)
-            self._video_widget.centerOn(self._video_item)
+            item.setSize(QSizeF(w, h))
+            scene.setSceneRect(0, 0, w, h)
+            widget.centerOn(item)
         except Exception:
             pass
 
     def _on_video_close(self) -> None:
-        if self._video_sync:
-            self._video_sync.stop()
-        for p in (self._video_player, self._video_sound):
-            if p:
-                p.stop()
-                p.setSource(QUrl())
-        self._video_split = False
-        self._video_on = False
-        self._hud_cam_stack.setCurrentIndex(0)
-        self._sync_mic_for_video()      # gives the microphone back
+        try:
+            if getattr(self, "_video_sync", None):
+                self._video_sync.stop()
+            for p in (getattr(self, "_video_player", None), getattr(self, "_video_sound", None)):
+                if p:
+                    p.stop()
+                    p.setSource(QUrl())
+            self._video_split = False
+            self._video_on = False
+            stack = getattr(self, "_hud_cam_stack", None)
+            if stack and stack.count() > 0:
+                stack.setCurrentIndex(0)
+            self._sync_mic_for_video()      # gives the microphone back
+        except Exception:
+            pass
 
     def _set_video_muted(self, muted: bool) -> None:
         """Silence whichever output is carrying the sound for this video."""
         muted = bool(muted)
-        if self._video_audio:
-            # When the sound is a separate stream this player has none, but
-            # muting it too costs nothing and keeps the two paths identical.
-            self._video_audio.setMuted(muted)
-        if self._video_sound_out:
-            self._video_sound_out.setMuted(muted)
+        try:
+            audio = getattr(self, "_video_audio", None)
+            if audio:
+                audio.setMuted(muted)
+            sound_out = getattr(self, "_video_sound_out", None)
+            if sound_out:
+                sound_out.setMuted(muted)
+        except Exception:
+            pass
         self._sync_video_mute_btn()
         self._sync_mic_for_video()
 
@@ -3458,43 +3499,25 @@ class AssistantWorkerWindow(QMainWindow):
         self._set_video_muted(muted)
 
     def _sync_mic_for_video(self) -> None:
-        """Close the microphone while the video is making sound.
-
-        Assistant Worker subtracts its OWN output from the microphone — that is what
-        core/echo.py does — but a video plays through a different output
-        entirely, so the guard has never heard of it and the assistant answers
-        the film. There is no arrangement in which an open microphone and a
-        loudspeaker in the same room do not do that.
-
-        So the microphone closes for exactly as long as the sound is on, and
-        opens again by itself the moment it goes off or the video is closed.
-        Only if Assistant Worker closed it: a microphone the user muted themselves stays
-        muted, and pressing the mute key during a video hands the decision back
-        to them for good.
-        """
-        sound_on = bool(self._video_on and self._video_sound_out
-                        and not self._video_sound_out.isMuted())
-        if sound_on and not self._muted:
-            self._video_auto_muted = True
-            self._set_muted(True, "The video's sound is on — silence it, close "
-                                  "it, or press F4 to talk. Typing still works.")
-        elif not sound_on and self._video_auto_muted:
-            self._video_auto_muted = False
-            self._set_muted(False, "The video is quiet again.")
+        try:
+            video_on = getattr(self, "_video_on", False)
+            sound_out = getattr(self, "_video_sound_out", None)
+            sound_on = bool(video_on and sound_out and not sound_out.isMuted())
+            if sound_on and not getattr(self, "_muted", False):
+                self._video_auto_muted = True
+                self._set_muted(True, "The video's sound is on — silence it, close "
+                                      "it, or press F4 to talk. Typing still works.")
+            elif not sound_on and getattr(self, "_video_auto_muted", False):
+                self._video_auto_muted = False
+                self._set_muted(False, "The video is quiet again.")
+        except Exception:
+            pass
 
     def _sync_video_sound(self) -> None:
-        """Keep the separate soundtrack in step with the picture.
-
-        Two players started at the same moment do not stay together: they buffer
-        independently, and measured on a real stream they were about half a
-        second apart after nine seconds. So the sound is nudged back to the
-        picture whenever it drifts far enough to hear — and only then, because
-        correcting a smaller gap is itself audible.
-        """
-        if not (self._video_split and self._video_sound and self._video_player):
-            return
         try:
-            if self._video_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            if not (getattr(self, "_video_split", False) and getattr(self, "_video_sound", None) and getattr(self, "_video_player", None)):
+                return
+            if QMediaPlayer is not None and self._video_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
                 return
             drift = self._video_sound.position() - self._video_player.position()
             if abs(drift) > 300:
@@ -3503,19 +3526,27 @@ class AssistantWorkerWindow(QMainWindow):
             pass
 
     def _sync_video_mute_btn(self) -> None:
-        out = self._video_sound_out if self._video_split else self._video_audio
+        btn = getattr(self, "_video_mute_btn", None)
+        if not btn:
+            return
+        out = getattr(self, "_video_sound_out", None) if getattr(self, "_video_split", False) else getattr(self, "_video_audio", None)
         muted = bool(out and out.isMuted())
-        self._video_mute_btn.setText("🔇  SOUND OFF" if muted else "🔊  SOUND ON")
+        btn.setText("🔇  SOUND OFF" if muted else "🔊  SOUND ON")
 
     def _toggle_video_mute(self) -> None:
-        out = self._video_sound_out if self._video_split else self._video_audio
+        out = getattr(self, "_video_sound_out", None) if getattr(self, "_video_split", False) else getattr(self, "_video_audio", None)
         if out:
-            self._set_video_muted(not out.isMuted())
+            try:
+                self._set_video_muted(not out.isMuted())
+            except Exception:
+                pass
 
     def _on_video_error(self, *_a) -> None:
         err = ""
         try:
-            err = self._video_player.errorString()
+            player = getattr(self, "_video_player", None)
+            if player:
+                err = player.errorString()
         except Exception:
             pass
         self.write_log(f"SYS: The video could not be played{(' — ' + err) if err else ''}.")
@@ -3526,6 +3557,12 @@ class AssistantWorkerWindow(QMainWindow):
 
     def video_is_playing(self) -> bool:
         return bool(self._video_on)
+
+    def write_log(self, text: str) -> None:
+        if hasattr(self, "_log_sig"):
+            self._log_sig.emit(str(text))
+        elif hasattr(self, "_log") and hasattr(self._log, "append_log"):
+            self._log.append_log(str(text))
 
     # ------------------------------------------------------------------
     # Icon generation — arc-reactor style, rendered with Pillow
@@ -5000,7 +5037,7 @@ class AssistantWorkerWindow(QMainWindow):
         return (str(s or "").replace("&", "&amp;").replace("<", "&lt;")
                 .replace(">", "&gt;").replace("\n", "<br>"))
 
-    def _show_review(self, title: str, summary: str, findings, unclear):
+    def _show_review(self, title: str, summary: str, findings, unclear=None):
         """Slot — Qt main thread. Lays a document review into the content panel."""
         e = self._esc
         parts = [f'<div style="color:{C.TEXT}; font-family:Courier New;">']
@@ -6402,6 +6439,9 @@ class AssistantWorkerUI:
 
     def video_is_playing(self) -> bool:
         return bool(self._win.video_is_playing())
+
+    def video_available(self) -> bool:
+        return bool(HAVE_VIDEO and getattr(self._win, "_video_player", None))
 
     def start_camera_stream(self) -> None:
         """Thread-safe: start live camera feed in the full HUD area."""

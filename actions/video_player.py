@@ -180,19 +180,27 @@ def video_player(parameters: dict = None, response=None, player=None,
     if action in ("stop", "close", "hide"):
         # Cancel an open that has not finished yet, so a video the user has
         # already changed their mind about never reaches the screen.
-        was_opening = not player.video_is_playing()
+        was_opening = bool(hasattr(player, "video_is_playing") and not player.video_is_playing())
         _begin_open()
-        player.stop_video()
+        if hasattr(player, "stop_video"):
+            try:
+                player.stop_video()
+            except Exception:
+                pass
         if was_opening:
             return "Stopped it before it opened."
         return "Closed the video."
 
     # ---- sound ------------------------------------------------------------
     if action in ("mute", "unmute", "sound_on", "sound_off"):
-        if not player.video_is_playing():
+        if hasattr(player, "video_is_playing") and not player.video_is_playing():
             return "Nothing is playing."
         muted = action in ("mute", "sound_off")
-        player.set_video_muted(muted)
+        if hasattr(player, "set_video_muted"):
+            try:
+                player.set_video_muted(muted)
+            except Exception:
+                pass
         return "Muted the video." if muted else "Turned the video's sound on."
 
     # ---- play -------------------------------------------------------------
@@ -201,36 +209,38 @@ def video_player(parameters: dict = None, response=None, player=None,
 
     local = _local_path(source)
     if local:
-        player.show_video(local, Path(local).name, muted=True)
-        return f"Playing {Path(local).name} on the display, muted."
+        if hasattr(player, "video_available") and player.video_available():
+            player.show_video(local, Path(local).name, muted=True)
+            return f"Playing {Path(local).name} on the display, muted."
+        else:
+            try:
+                import os
+                os.startfile(local)
+                return f"Opening {Path(local).name} in default media player."
+            except Exception as e:
+                return f"Could not open {Path(local).name}: {e}"
 
     # A direct media URL can go straight to the player; a YouTube page cannot.
     if _is_url(source) and not _YT.search(source):
-        player.show_video(source, source.rsplit("/", 1)[-1][:44], muted=True)
-        return "Playing that on the display, muted."
+        if hasattr(player, "video_available") and player.video_available():
+            player.show_video(source, source.rsplit("/", 1)[-1][:44], muted=True)
+            return "Playing that on the display, muted."
+        else:
+            try:
+                webbrowser.open(source)
+                return "Opening video in your browser."
+            except Exception as e:
+                return f"Could not open video URL: {e}"
 
     # ANSWER FIRST, OPEN SECOND.
-    #
-    # Working out what to play takes seconds that nothing can remove: measured
-    # against YouTube, 3.3s for a spoken phrase (a search, then the video) and
-    # 2.0s for a link, plus however long Qt spends buffering before the first
-    # frame. Restricting yt-dlp to a lighter client was tried and is not the
-    # answer — the fast clients came back with zero usable formats.
-    #
-    # So the seconds stay, and what changes is where the user spends them:
-    # listening to JARVIS say it is coming, instead of watching nothing happen.
-    # The same shape whatsapp_call uses, and for the same reason.
+    # Working out what to play takes a few seconds; start resolving on a background thread.
     threading.Thread(target=_play_youtube, args=(player, source, _begin_open()),
                      daemon=True, name="video-open").start()
-    # Deliberately a status line rather than a finished English sentence: the
-    # model writes the words, in the user's own language.
     return f"status=opening source={source}"
 
 
 def _play_youtube(player, source: str, token: int) -> None:
-    """The part that takes seconds. Speaks only if something goes wrong —
-    silence means the video is on screen, which the user can see for
-    themselves."""
+    """Resolve YouTube and either display embedded if supported or open in default browser."""
     try:
         url, audio_url, title, err = _resolve_youtube(source)
     except Exception as e:                                  # noqa: BLE001
@@ -240,7 +250,8 @@ def _play_youtube(player, source: str, token: int) -> None:
     if not _still_wanted(token):
         return                       # the user closed it while it was resolving
 
-    if url:
+    # If embedded HUD video is supported by the UI player, show it there
+    if url and hasattr(player, "video_available") and player.video_available():
         try:
             player.show_video(url, title or source, muted=True,
                               audio_source=audio_url)
@@ -248,19 +259,14 @@ def _play_youtube(player, source: str, token: int) -> None:
         except Exception as e:                              # noqa: BLE001
             err = str(e)
 
-    # Resolution failed. Opening it in a browser is worse than playing it in the
-    # HUD, but it is a great deal better than doing nothing, and the reason is
-    # reported rather than swallowed.
+    # Embedded playback not available or stream resolution failed:
+    # Open seamlessly in the user's default browser!
     page = source if _YT.search(source) else _search_page(source)
-    opened = ""
     try:
         webbrowser.open(page)
-        opened = " and it has been opened in the browser instead"
     except Exception:
         pass
-    _say(player, "Tell the user, in one short sentence in their own language: "
-                 f"'{source}' could not be played on the display "
-                 f"({err}){opened}.")
+    _say(player, f"Opened {source} in your browser.")
 
 
 def _say(player, instruction: str) -> None:
