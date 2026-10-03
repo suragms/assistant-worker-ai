@@ -559,11 +559,13 @@ class HudCanvas(QWidget):
         pm = QPixmap(max(1, W), max(1, H))
         pm.fill(Qt.GlobalColor.transparent)
         gp = QPainter(pm)
-        gp.setPen(QPen(qcol(C.PRI_GHO), 1))
-        for x in range(0, W, 48):
-            for y in range(0, H, 48):
-                gp.drawPoint(x, y)
-        gp.end()
+        try:
+            gp.setPen(QPen(qcol(C.PRI_GHO), 1))
+            for x in range(0, W, 48):
+                for y in range(0, H, 48):
+                    gp.drawPoint(x, y)
+        finally:
+            gp.end()
         return pm
 
     def _step(self):
@@ -849,100 +851,103 @@ class HudCanvas(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        if not p.isActive():      # device not ready (e.g. 0-size during layout) — skip cleanly
-            return
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), qcol(C.BG))
+        try:
+            if not p.isActive():
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.fillRect(self.rect(), qcol(C.BG))
 
-        W, H = self.width(), self.height()
-        cx, cy = W / 2, H / 2
-        fw = min(W, H)
+            W, H = self.width(), self.height()
+            if W <= 0 or H <= 0:
+                return
+            cx, cy = W / 2, H / 2
+            fw = min(W, H)
 
-        # grid dots — blitted from a cached layer; rebuilt only when the size
-        # or the theme's ghost colour changes (so live re-theming still works).
-        _gkey = (W, H, C.PRI_GHO)
-        if self._grid_cache is None or self._grid_key != _gkey:
-            self._grid_cache = self._make_grid(W, H)
-            self._grid_key   = _gkey
-        p.drawPixmap(0, 0, self._grid_cache)
+            # grid dots — blitted from a cached layer; rebuilt only when the size
+            # or the theme's ghost colour changes (so live re-theming still works).
+            _gkey = (W, H, C.PRI_GHO)
+            if self._grid_cache is None or self._grid_key != _gkey:
+                self._grid_cache = self._make_grid(W, H)
+                self._grid_key   = _gkey
+            p.drawPixmap(0, 0, self._grid_cache)
 
-        _sy_status = cy + fw * 0.40
-        if self._avatar is not None and self.hud_style == "face":
-            _band_t = 12.0
-            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
-            _r_head = min(fw * 0.355, _band_h / (self._avatar.SPAN + 0.08))
-            _head_cy = _band_t + (_band_h - self._avatar.SPAN * _r_head) / 2.0 + _r_head
+            _sy_status = cy + fw * 0.40
+            if self._avatar is not None and self.hud_style == "face":
+                _band_t = 12.0
+                _band_h = max(60.0, _sy_status - 12.0 - _band_t)
+                _r_head = min(fw * 0.355, _band_h / (self._avatar.SPAN + 0.08))
+                _head_cy = _band_t + (_band_h - self._avatar.SPAN * _r_head) / 2.0 + _r_head
 
-            if self.muted:
-                _main = _acc = qcol(C.MUTED_C)
-            else:
-                _main = qcol(C.PRI)
-                if self.speaking:
-                    _acc = qcol(C.ACC)
-                elif self.state in ("THINKING", "PROCESSING"):
-                    _acc = qcol(C.ACC2)
-                elif self.state == "LISTENING":
-                    _acc = qcol(C.GREEN)
+                if self.muted:
+                    _main = _acc = qcol(C.MUTED_C)
                 else:
-                    _acc = qcol(C.PRI)
-            self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
+                    _main = qcol(C.PRI)
+                    if self.speaking:
+                        _acc = qcol(C.ACC)
+                    elif self.state in ("THINKING", "PROCESSING"):
+                        _acc = qcol(C.ACC2)
+                    elif self.state == "LISTENING":
+                        _acc = qcol(C.GREEN)
+                    else:
+                        _acc = qcol(C.PRI)
+                self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
 
-        # reactor core — the other centrepiece, and the fallback if the head
-        # could not be built. There is no third path: the old face.png branch
-        # was unreachable (no such file ships) and the bare orb it fell through
-        # to is what this replaces.
-        else:
-            _band_t = 12.0
-            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
-            _r = min(W * 0.46, _band_h / 2.0)
-            self._paint_core(p, cx, _band_t + _band_h / 2.0, _r, W, _band_h)
-
-        # status text
-        sy = _sy_status
-        if self.muted:
-            txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
-        elif self.speaking:
-            txt, col = "●  SPEAKING",  qcol(C.ACC)
-        elif self.state == "THINKING":
-            sym = "◈" if self._blink else "◇"
-            txt, col = f"{sym}  THINKING",   qcol(C.ACC2)
-        elif self.state == "PROCESSING":
-            sym = "▷" if self._blink else "▶"
-            txt, col = f"{sym}  PROCESSING", qcol(C.ACC2)
-        elif self.state == "LISTENING":
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  LISTENING",  qcol(C.GREEN)
-        else:
-            sym = "●" if self._blink else "○"
-            txt, col = f"{sym}  {self.state}", qcol(C.PRI)
-
-        p.setPen(QPen(col, 1))
-        p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
-        p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
-
-        # waveform — reacts to the real audio level (mic while listening,
-        # Assistant Worker's own voice while speaking). Falls back to a gentle idle
-        # ripple when there's no sound. _amp_disp is the smoothed 0–1 level.
-        wy = sy + 30
-        N, bw = 36, 8
-        wx0 = (W - N * bw) / 2
-        amp = self._amp_disp
-        mid = (N - 1) / 2.0
-        for i in range(N):
-            if self.muted:
-                hgt, cl = 2, qcol(C.MUTED_C)
+            # reactor core — the other centrepiece, and the fallback if the head
+            # could not be built. There is no third path: the old face.png branch
+            # was unreachable (no such file ships) and the bare orb it fell through
+            # to is what this replaces.
             else:
-                env     = (1.0 - abs(i - mid) / mid) ** 0.7      # center-weighted hump
-                shimmer = 0.55 + 0.45 * math.sin(self._tick * 0.18 + i * 0.7)
-                idle    = 3.0 + 2.0 * math.sin(self._tick * 0.09 + i * 0.6)
-                hgt     = int(max(2, min(24, idle + amp * 22.0 * env * shimmer)))
-                if amp > 0.05:
-                    cl = qcol(C.PRI) if hgt > 12 else qcol(C.PRI_DIM)
-                else:
-                    cl = qcol(C.BORDER_B)
-            p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
+                _band_t = 12.0
+                _band_h = max(60.0, _sy_status - 12.0 - _band_t)
+                _r = min(W * 0.46, _band_h / 2.0)
+                self._paint_core(p, cx, _band_t + _band_h / 2.0, _r, W, _band_h)
 
-        p.end()   # end deterministically so the backing store never flushes an active painter
+            # status text
+            sy = _sy_status
+            if self.muted:
+                txt, col = "⊘  MUTED",     qcol(C.MUTED_C)
+            elif self.speaking:
+                txt, col = "●  SPEAKING",  qcol(C.ACC)
+            elif self.state == "THINKING":
+                sym = "◈" if self._blink else "◇"
+                txt, col = f"{sym}  THINKING",   qcol(C.ACC2)
+            elif self.state == "PROCESSING":
+                sym = "▷" if self._blink else "▶"
+                txt, col = f"{sym}  PROCESSING", qcol(C.ACC2)
+            elif self.state == "LISTENING":
+                sym = "●" if self._blink else "○"
+                txt, col = f"{sym}  LISTENING",  qcol(C.GREEN)
+            else:
+                sym = "●" if self._blink else "○"
+                txt, col = f"{sym}  {self.state}", qcol(C.PRI)
+
+            p.setPen(QPen(col, 1))
+            p.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+            p.drawText(QRectF(0, sy, W, 26), Qt.AlignmentFlag.AlignCenter, txt)
+
+            # waveform — reacts to the real audio level (mic while listening,
+            # Assistant Worker's own voice while speaking). Falls back to a gentle idle
+            # ripple when there's no sound. _amp_disp is the smoothed 0–1 level.
+            wy = sy + 30
+            N, bw = 36, 8
+            wx0 = (W - N * bw) / 2
+            amp = self._amp_disp
+            mid = (N - 1) / 2.0
+            for i in range(N):
+                if self.muted:
+                    hgt, cl = 2, qcol(C.MUTED_C)
+                else:
+                    env     = (1.0 - abs(i - mid) / mid) ** 0.7      # center-weighted hump
+                    shimmer = 0.55 + 0.45 * math.sin(self._tick * 0.18 + i * 0.7)
+                    idle    = 3.0 + 2.0 * math.sin(self._tick * 0.09 + i * 0.6)
+                    hgt     = int(max(2, min(24, idle + amp * 22.0 * env * shimmer)))
+                    if amp > 0.05:
+                        cl = qcol(C.PRI) if hgt > 12 else qcol(C.PRI_DIM)
+                    else:
+                        cl = qcol(C.BORDER_B)
+                p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
+        finally:
+            p.end()
 
 class MetricBar(QWidget):
 
@@ -965,45 +970,48 @@ class MetricBar(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        if not p.isActive():
-            return
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        W, H = self.width(), self.height()
+        try:
+            if not p.isActive():
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            W, H = self.width(), self.height()
+            if W <= 0 or H <= 0:
+                return
 
-        p.setBrush(QBrush(qcol(C.PANEL2)))
-        p.setPen(QPen(qcol(C.BORDER_A), 1))
-        p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 4, 4)
+            p.setBrush(QBrush(qcol(C.PANEL2)))
+            p.setPen(QPen(qcol(C.BORDER_A), 1))
+            p.drawRoundedRect(QRectF(1, 1, W - 2, H - 2), 4, 4)
 
-        bar_h   = 4
-        bar_y   = H - bar_h - 5
-        bar_w   = W - 12
-        bar_x   = 6
-        fill_w  = int(bar_w * self._value / 100)
+            bar_h   = 4
+            bar_y   = H - bar_h - 5
+            bar_w   = W - 12
+            bar_x   = 6
+            fill_w  = int(bar_w * self._value / 100)
 
-        p.setBrush(QBrush(qcol(C.BAR_BG)))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 2, 2)
+            p.setBrush(QBrush(qcol(C.BAR_BG)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 2, 2)
 
-        if self._value > 85:
-            bar_col = qcol(C.RED)
-        elif self._value > 65:
-            bar_col = qcol(C.ACC)
-        else:
-            bar_col = qcol(self._color)
+            if self._value > 85:
+                bar_col = qcol(C.RED)
+            elif self._value > 65:
+                bar_col = qcol(C.ACC)
+            else:
+                bar_col = qcol(self._color)
 
-        if fill_w > 0:
-            p.setBrush(QBrush(bar_col))
-            p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, bar_h), 2, 2)
+            if fill_w > 0:
+                p.setBrush(QBrush(bar_col))
+                p.drawRoundedRect(QRectF(bar_x, bar_y, fill_w, bar_h), 2, 2)
 
-        p.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-        p.setPen(QPen(qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(8, 5, 50, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._label)
+            p.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+            p.setPen(QPen(qcol(C.TEXT_DIM), 1))
+            p.drawText(QRectF(8, 5, 50, 14), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._label)
 
-        p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-        p.setPen(QPen(bar_col if self._text != "--" else qcol(C.TEXT_DIM), 1))
-        p.drawText(QRectF(0, 4, W - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._text)
-
-        p.end()
+            p.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+            p.setPen(QPen(bar_col if self._text != "--" else qcol(C.TEXT_DIM), 1))
+            p.drawText(QRectF(0, 4, W - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._text)
+        finally:
+            p.end()
 
 class LogWidget(QTextEdit):
     _sig = pyqtSignal(str)
@@ -1227,33 +1235,36 @@ class _DropCanvas(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        if not p.isActive():
-            return
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        z    = self._z
-        W, H = self.width(), self.height()
-        pad  = 6
-        rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
+        try:
+            if not p.isActive():
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            z    = self._z
+            W, H = self.width(), self.height()
+            if W <= 0 or H <= 0:
+                return
+            pad  = 6
+            rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
 
-        bg_col = qcol("#001a24" if z._drag_over else ("#001218" if z._hovering else C.PANEL))
-        p.setBrush(QBrush(bg_col)); p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(rect, 6, 6)
+            bg_col = qcol("#001a24" if z._drag_over else ("#001218" if z._hovering else C.PANEL))
+            p.setBrush(QBrush(bg_col)); p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(rect, 6, 6)
 
-        if z._current_file:   border_col = qcol(C.GREEN, 200)
-        elif z._drag_over:    border_col = qcol(C.PRI, 230)
-        elif z._hovering:     border_col = qcol(C.BORDER_B, 200)
-        else:                 border_col = qcol(C.BORDER, 160)
+            if z._current_file:   border_col = qcol(C.GREEN, 200)
+            elif z._drag_over:    border_col = qcol(C.PRI, 230)
+            elif z._hovering:     border_col = qcol(C.BORDER_B, 200)
+            else:                 border_col = qcol(C.BORDER, 160)
 
-        pen = QPen(border_col, 1.5, Qt.PenStyle.DashLine)
-        pen.setDashOffset(z._dash_offset)
-        p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(rect, 6, 6)
+            pen = QPen(border_col, 1.5, Qt.PenStyle.DashLine)
+            pen.setDashOffset(z._dash_offset)
+            p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(rect, 6, 6)
 
-        if z._current_file:   self._paint_file(p, W, H)
-        elif z._drag_over:    self._paint_drag_over(p, W, H)
-        else:                 self._paint_idle(p, W, H, z._hovering)
-
-        p.end()
+            if z._current_file:   self._paint_file(p, W, H)
+            elif z._drag_over:    self._paint_drag_over(p, W, H)
+            else:                 self._paint_idle(p, W, H, z._hovering)
+        finally:
+            p.end()
 
     def _paint_idle(self, p, W, H, hover):
         cx, cy = W / 2, H / 2
@@ -1568,35 +1579,37 @@ class HueWheel(QWidget):
     # ── drawing ──────────────────────────────────────────────────────────────
     def paintEvent(self, _):
         p = QPainter(self)
-        if not p.isActive():
-            return
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect   = self._ring_rect()
-        center = rect.center()
+        try:
+            if not p.isActive():
+                return
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            rect   = self._ring_rect()
+            center = rect.center()
 
-        grad = QConicalGradient(center, 0)
-        for i in range(0, 361, 20):
-            grad.setColorAt(i / 360.0, QColor.fromHsvF((i % 360) / 360.0, 1.0, 1.0))
-        p.setPen(QPen(QBrush(grad), self._RING))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(rect)
+            grad = QConicalGradient(center, 0)
+            for i in range(0, 361, 20):
+                grad.setColorAt(i / 360.0, QColor.fromHsvF((i % 360) / 360.0, 1.0, 1.0))
+            p.setPen(QPen(QBrush(grad), self._RING))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(rect)
 
-        # centre preview circle
-        preview = QColor.fromHsvF(self._hue, 1.0, 1.0)
-        inner   = rect.adjusted(30, 30, -30, -30)
-        p.setPen(QPen(qcol(C.BORDER_B), 1))
-        p.setBrush(QBrush(preview))
-        p.drawEllipse(inner)
+            # centre preview circle
+            preview = QColor.fromHsvF(self._hue, 1.0, 1.0)
+            inner   = rect.adjusted(30, 30, -30, -30)
+            p.setPen(QPen(qcol(C.BORDER_B), 1))
+            p.setBrush(QBrush(preview))
+            p.drawEllipse(inner)
 
-        # draggable handle
-        r   = rect.width() / 2
-        ang = self._hue * 2 * math.pi
-        hx  = center.x() + r * math.cos(ang)
-        hy  = center.y() - r * math.sin(ang)
-        p.setPen(QPen(QColor("#00060a"), 2))
-        p.setBrush(QBrush(QColor("#ffffff")))
-        p.drawEllipse(QPointF(hx, hy), 7.5, 7.5)
-        p.end()
+            # draggable handle
+            r   = rect.width() / 2
+            ang = self._hue * 2 * math.pi
+            hx  = center.x() + r * math.cos(ang)
+            hy  = center.y() - r * math.sin(ang)
+            p.setPen(QPen(QColor("#00060a"), 2))
+            p.setBrush(QBrush(QColor("#ffffff")))
+            p.drawEllipse(QPointF(hx, hy), 7.5, 7.5)
+        finally:
+            p.end()
 
     # ── fare ─────────────────────────────────────────────────────────────────
     def mousePressEvent(self, e):
@@ -3037,10 +3050,12 @@ class AssistantWorkerWindow(QMainWindow):
                 mask = QBitmap(48, 48)
                 mask.fill(Qt.GlobalColor.white)
                 p = QPainter(mask)
-                p.setRenderHint(QPainter.RenderHint.Antialiasing)
-                p.setBrush(Qt.GlobalColor.black)
-                p.drawEllipse(0, 0, 48, 48)
-                p.end()
+                try:
+                    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    p.setBrush(Qt.GlobalColor.black)
+                    p.drawEllipse(0, 0, 48, 48)
+                finally:
+                    p.end()
                 self._avatar.setMask(mask)
                 self._avatar.setPixmap(px.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
         if self._avatar is None:

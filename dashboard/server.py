@@ -223,7 +223,7 @@ def _ensure_network_access(port: int) -> None:
                 print("[Dashboard] Refresh your phone browser to connect.")
             else:
                 print("[Dashboard] Setup was not allowed.")
-                print("[Dashboard] Phone connections may fail until JARVIS is run as Administrator.")
+                print("[Dashboard] Phone connections may fail until Assistant Worker is run as Administrator.")
         except Exception as e:
             print(f"[Dashboard] Firewall setup error: {e}")
         finally:
@@ -605,7 +605,7 @@ class DashboardServer:
   h2{color:#f87171;margin-bottom:12px}p{color:#5e6a7e;font-size:14px}
 </style></head>
 <body><div><h2>Link Expired</h2>
-<p>Press <strong style="color:#dde3ed">Remote Control</strong> in JARVIS to get a new QR code.</p>
+<p>Press <strong style="color:#dde3ed">Remote Control</strong> in Assistant Worker to get a new QR code.</p>
 </div></body></html>""")
 
             del self._pending_keys[key]
@@ -636,7 +636,7 @@ class DashboardServer:
   localStorage.setItem('jarvis_device_token','{dev_tok}');
   setTimeout(function(){{location.replace('/')}},400);
 </script>
-<p>Connecting to JARVIS…</p>
+<p>Connecting to Assistant Worker…</p>
 </body></html>""")
 
         @app.post("/api/device-login")
@@ -886,5 +886,5 @@ class DashboardServer:
 
         proto = "https" if use_ssl else "http"
         print(f"[Dashboard] {proto}://{self._ip}:{PORT}")
-        print("[Dashboard] Press 'Remote Control' in JARVIS UI to get the QR code.")
+        print("[Dashboard] Press 'Remote Control' in Assistant Worker to get the QR code.")
         await uvicorn.Server(cfg).serve()
