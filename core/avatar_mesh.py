@@ -31,7 +31,10 @@ from pathlib import Path
 
 import numpy as np
 
-_OBJ = Path(__file__).resolve().parent / "face_model.obj"
+try:
+    from core.paths import FACE_MODEL_PATH as _OBJ
+except ImportError:
+    _OBJ = Path(__file__).resolve().parent / "face_model.obj"
 
 # Cranium shape, in the model's own units (chin ≈ -9.4, forehead ≈ +8.3).
 # Tuned so that brow→crown is ~0.36 of the head's height, which is the real

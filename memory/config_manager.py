@@ -2,14 +2,17 @@ import json
 import sys
 from pathlib import Path
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+try:
+    from core.paths import CONFIG_FILE, CONFIG_DIR, USER_DATA_DIR
+except ImportError:
+    def get_base_dir() -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).parent
+        return Path(__file__).resolve().parent.parent
 
-BASE_DIR    = get_base_dir()
-CONFIG_DIR  = BASE_DIR / "config"
-CONFIG_FILE = CONFIG_DIR / "api_keys.json"
+    BASE_DIR    = get_base_dir()
+    CONFIG_DIR  = BASE_DIR / "config"
+    CONFIG_FILE = CONFIG_DIR / "api_keys.json"
 
 def ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,8 +55,8 @@ def is_configured() -> bool:
 
 
 def get_assistant_name() -> str:
-    """Return the configured assistant name, or 'JARVIS' if not set."""
-    return load_api_keys().get("assistant_name", "JARVIS") or "JARVIS"
+    """Return the configured assistant name, or 'Assistant Worker' if not set."""
+    return load_api_keys().get("assistant_name", "Assistant Worker") or "Assistant Worker"
 
 
 def get_user_name() -> str:
@@ -70,7 +73,7 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception:
             data = {}
-    data["assistant_name"] = assistant_name.strip() or "JARVIS"
+    data["assistant_name"] = assistant_name.strip() or "Assistant Worker"
     data["user_name"] = user_name.strip()
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
@@ -102,6 +105,40 @@ def save_voice(voice_name: str) -> None:
     v = (voice_name or "").strip()
     data["voice_name"] = v if v in AVAILABLE_VOICES else DEFAULT_VOICE
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+
+def get_tts_speed() -> float:
+    """Return configured TTS speed multiplier (e.g. 1.0)."""
+    try:
+        return float(load_api_keys().get("tts_speed", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def save_tts_speed(speed: float) -> None:
+    """Persist TTS speech rate multiplier."""
+    try:
+        s = max(0.5, min(2.0, float(speed)))
+        _patch_config(tts_speed=s)
+    except Exception:
+        pass
+
+
+def get_tts_volume() -> int:
+    """Return configured TTS volume percentage (0–100)."""
+    try:
+        return int(load_api_keys().get("tts_volume", 100))
+    except (TypeError, ValueError):
+        return 100
+
+
+def save_tts_volume(vol: int) -> None:
+    """Persist TTS volume percentage."""
+    try:
+        v = max(0, min(100, int(vol)))
+        _patch_config(tts_volume=v)
+    except Exception:
+        pass
 
 
 def get_wake_word_enabled() -> bool:
@@ -311,6 +348,34 @@ def _patch_config(**fields) -> None:
             data = {}
     data.update(fields)
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+
+def get_voice_mode() -> str:
+    """Return voice mode: 'automatic', 'cloud', or 'offline'."""
+    v = str(load_api_keys().get("voice_mode", "automatic")).strip().lower()
+    return v if v in ("automatic", "cloud", "offline") else "automatic"
+
+
+def save_voice_mode(mode: str) -> None:
+    m = str(mode or "").strip().lower()
+    _save_flag("voice_mode", m if m in ("automatic", "cloud", "offline") else "automatic")
+
+
+def get_offline_stt_backend() -> str:
+    return str(load_api_keys().get("offline_stt_backend", "whisper")).strip().lower()
+
+
+def save_offline_stt_backend(backend: str) -> None:
+    _save_flag("offline_stt_backend", str(backend or "whisper").strip().lower())
+
+
+def get_offline_tts_backend() -> str:
+    return str(load_api_keys().get("offline_tts_backend", "pyttsx3")).strip().lower()
+
+
+def save_offline_tts_backend(backend: str) -> None:
+    _save_flag("offline_tts_backend", str(backend or "pyttsx3").strip().lower())
+
 
 
 def get_input_device() -> str:

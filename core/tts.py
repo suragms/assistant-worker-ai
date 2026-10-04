@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import queue as _queue
+import re
 import threading
 from typing import Callable, Optional
 
@@ -105,8 +106,10 @@ def _play_audio_bytes(audio_bytes: bytes) -> None:
 class EdgeTTSEngine:
     """Microsoft EdgeTTS – free, requires internet."""
 
-    def __init__(self, voice: str = "en-US-GuyNeural"):
-        self.voice = voice
+    def __init__(self, voice: str = "en-US-GuyNeural", rate: str = "+0%", volume: str = "+0%"):
+        self.voice  = voice
+        self.rate   = rate
+        self.volume = volume
 
     def speak(self, text: str) -> None:
         loop = asyncio.new_event_loop()
@@ -119,7 +122,7 @@ class EdgeTTSEngine:
 
     async def _synth(self, text: str) -> bytes:
         import edge_tts
-        comm = edge_tts.Communicate(text, self.voice)
+        comm = edge_tts.Communicate(text, self.voice, rate=self.rate, volume=self.volume)
         buf  = bytearray()
         async for chunk in comm.stream():
             if chunk["type"] == "audio":
@@ -376,6 +379,50 @@ class ElevenLabsTTSEngine:
         _play_audio_bytes(resp.content)
 
 
+def clean_tts_text(text: str) -> str:
+    """Clean and normalize text before speech synthesis.
+
+    Strips markdown formatting, code fences, links, HTML tags, emojis,
+    and special characters so the text is spoken naturally without
+    pronouncing markup symbols.
+    """
+    if not text:
+        return ""
+    # Remove code blocks ```...```
+    cleaned = re.sub(r"```[\s\S]*?```", " ", text)
+    # Remove inline code `...`
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    # Remove markdown images ![alt](url) -> ""
+    cleaned = re.sub(r"!\[([^\]]*)\]\([^)]+\)", "", cleaned)
+    # Remove markdown links [text](url) -> text
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+    # Remove raw URLs
+    cleaned = re.sub(r"https?://\S+", "", cleaned)
+    # Remove markdown headings (# Heading)
+    cleaned = re.sub(r"^\s*#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
+    # Remove bold/italic markers (*, **, _, __)
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
+    cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+    cleaned = re.sub(r"_([^_]+)_", r"\1", cleaned)
+    # Remove strikethrough (~~text~~)
+    cleaned = re.sub(r"~~([^~]+)~~", r"\1", cleaned)
+    # Remove blockquotes (> quote)
+    cleaned = re.sub(r"^\s*>\s*", "", cleaned, flags=re.MULTILINE)
+    # Remove bullet markers (- item, * item, + item)
+    cleaned = re.sub(r"^\s*[-*+]\s+", "", cleaned, flags=re.MULTILINE)
+    # Remove numbered lists (1. item)
+    cleaned = re.sub(r"^\s*\d+\.\s+", "", cleaned, flags=re.MULTILINE)
+    # Remove HTML tags (<tag>)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    # Remove emojis and decorative unicode symbols
+    cleaned = re.sub(r"[\U00010000-\U0010ffff]", "", cleaned)
+    cleaned = re.sub(r"[◈◉●▸■◆▶▲▼◀★☆🎙⚙🔊⏹🛑🎤]", "", cleaned)
+    # Normalize whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 # ---------------------------------------------------------------------------
 # Thread-safe player wrapper
 # ---------------------------------------------------------------------------
@@ -402,12 +449,15 @@ class TTSPlayer:
         on_done:  Optional[Callable] = None,
     ) -> None:
         """Synthesise and play text. BLOCKING – call from a dedicated thread."""
+        cleaned = clean_tts_text(text)
+        if not cleaned:
+            return
         try:
             with self._lock:
                 self._playing = True
             if on_start:
                 on_start()
-            self._engine.speak(text)
+            self._engine.speak(cleaned)
         except Exception as e:
             print(f"[TTS] Error: {e}")
         finally:

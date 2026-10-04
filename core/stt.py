@@ -14,6 +14,14 @@ class WhisperSTT:
     def __init__(self, model_name: str = "base", language: str | None = None):
         import os
         from faster_whisper import WhisperModel
+        from core.paths import MODELS_DIR
+
+        # Check if local model directory exists in MODELS_DIR
+        local_cand = MODELS_DIR / f"whisper-{model_name}"
+        if not local_cand.exists():
+            local_cand = MODELS_DIR / model_name
+        model_target = str(local_cand) if (local_cand.exists() and (local_cand / "model.bin").exists()) else model_name
+
         print(f"[STT] Loading Whisper '{model_name}'…")
         try:
             import torch
@@ -23,7 +31,7 @@ class WhisperSTT:
             device, compute = "cpu", "int8"
 
         try:
-            self._model = WhisperModel(model_name, device=device, compute_type=compute)
+            self._model = WhisperModel(model_target, device=device, compute_type=compute)
         except Exception as _first_err:
             # Offline flag set but model not cached yet → clear flags and download once.
             # Keywords cover multiple huggingface_hub error message variants across versions.
@@ -75,12 +83,19 @@ class VoskSTT:
 
     def __init__(self, model_path: str | None = None, language: str = "en-us"):
         from vosk import Model, KaldiRecognizer
+        from core.paths import MODELS_DIR
+
         print("[STT] Loading Vosk model…")
         if model_path:
             model = Model(model_path)
         else:
-            lang  = language.strip().lower() if language and language.strip().lower() != "auto" else "en-us"
-            model = Model(lang=lang)
+            # Check if models exist in MODELS_DIR
+            candidate = MODELS_DIR / "vosk-model-small-en-us-0.15"
+            if candidate.exists() and ((candidate / "am").exists() or (candidate / "conf").exists()):
+                model = Model(str(candidate))
+            else:
+                lang = language.strip().lower() if language and language.strip().lower() != "auto" else "en-us"
+                model = Model(lang=lang)
         self._rec = KaldiRecognizer(model, 16000)
         print("[STT] Vosk ready.")
 
@@ -91,3 +106,34 @@ class VoskSTT:
             return result.get("text", ""), True
         partial = json.loads(self._rec.PartialResult())
         return partial.get("partial", ""), False
+
+
+class SpeechRecognizerBackend:
+    """Unified speech recognizer backend with offline support."""
+
+    def __init__(self, engine: str | None = None):
+        if not engine:
+            try:
+                from memory.config_manager import get_offline_stt_backend
+                engine = get_offline_stt_backend()
+            except Exception:
+                engine = "whisper"
+        self.engine_name = engine
+        self._stt = None
+        self._init_engine()
+
+    def _init_engine(self):
+        try:
+            if self.engine_name == "vosk":
+                self._stt = VoskSTT()
+            else:
+                self._stt = WhisperSTT(model_name="tiny")
+        except Exception as e:
+            print(f"[STT] Engine init fallback/failed: {e}")
+            self._stt = None
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        if self._stt and hasattr(self._stt, "transcribe"):
+            return self._stt.transcribe(audio)
+        return ""
+

@@ -14,6 +14,16 @@ if _platform.system() == "Windows":
 
     _subprocess.Popen = _Popen
 
+    # Ensure GUI thread attaches to the interactive user desktop if launched from subshell
+    try:
+        import ctypes as _ctypes
+        _u32 = _ctypes.windll.user32
+        _hdesk = _u32.OpenDesktopW("Default", 0, False, 0x01FF)
+        if _hdesk:
+            _u32.SetThreadDesktop(_hdesk)
+    except Exception:
+        pass
+
 
 # ── Console must survive non-UTF-8 code pages ────────────────────────────────
 # Every status line in this file carries an emoji, and on a legacy Windows
@@ -71,8 +81,10 @@ from actions.web_search        import _news as _fetch_news_sync
 from memory.config_manager     import (
     get_brief_enabled, get_media_resolution, get_proactive_audio_enabled,
     get_push_to_talk_enabled, get_thinking_enabled, get_turn_tuning, get_voice,
-    get_wake_word_enabled, save_wake_word_enabled,    get_input_device, get_output_device,
+    get_wake_word_enabled, save_wake_word_enabled, get_input_device, get_output_device,
+    get_tts_volume, get_voice_mode, save_voice_mode,
 )
+from core.offline_fallback        import OfflineFallbackManager
 from core                     import gemini as _gemini
 from core.plugin_loader        import discover_plugins
 from core                      import undo as undo_stack
@@ -89,14 +101,14 @@ from core.wake_word            import (
 # again (wake-word mode only).
 WAKE_SLEEP_TIMEOUT = 120.0   # seconds (2 minutes)
 
+from core.paths import (
+    get_bundle_dir, resource_path, PROMPT_PATH, CONFIG_FILE as API_CONFIG_PATH,
+)
+
 def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
+    return get_bundle_dir()
 
 BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 # The conversation's model. A NAME, not a decision: the ladder lives in
 # core/gemini.py and this is only whichever rung is currently in use, kept here
 # as a module attribute because plugins read it (chat_takeover asks main for it
@@ -574,6 +586,13 @@ class AssistantWorkerLive:
         # handed to the device far faster than they play, so "now" ran the lips
         # ahead of the words and cut every schedule short. 0 = nothing playing.
         self._play_cursor          = 0.0
+        # Initialize production output volume directly from saved user settings (0.0–1.0)
+        init_vol                   = get_tts_volume()
+        self._target_volume        = max(0.0, min(1.0, float(init_vol) / 100.0))
+        self._current_volume       = self._target_volume
+        self._output_volume        = self._target_volume     # 0.0–1.0 linear scalar
+        self._out_stream           = None                    # Live sounddevice RawOutputStream
+        self._mic_level_smooth     = 0.0                     # EMA smoothed mic meter level
         self.ui.on_push_to_talk   = self.set_push_to_talk
         self.ui.ptt_hold          = self._on_ptt
         self.ui.on_text_command   = self._on_text_command
@@ -581,6 +600,9 @@ class AssistantWorkerLive:
         self.ui.on_interrupt      = self.interrupt
         self.ui.on_voice_change   = self._on_voice_change     # voice picker → rebuild session
         self.ui.on_audio_device_change = self._on_audio_device_change
+        self.ui.on_volume_change  = self._on_volume_change    # volume slider → scale PCM output
+        self._offline_mgr         = OfflineFallbackManager()
+        self._offline_active      = False
         self._reconnect_event: asyncio.Event | None = None
         self._reconnect_keep = True   # False → next rebuild drops the resumption handle
 
@@ -610,14 +632,15 @@ class AssistantWorkerLive:
         self._enhanced_live = True  # proactive audio; auto-disabled if the server rejects it
         self._tuned_live    = True  # turn-taking / media / thinking knobs; same fallback
 
-        _base_dir = Path(__file__).resolve().parent
+        _actions_dir = resource_path("actions")
+        _plugins_dir = resource_path("plugins")
         _inline_names = {t["name"] for t in TOOL_DECLARATIONS}
 
         # File-backed tools: every actions/*.py with a TOOL dict, discovered the
         # same way plugins are. Reserved names = the inline tools above, so an
         # action can never shadow one.
         self._action_registry = discover_actions(
-            actions_dir=_base_dir / "actions",
+            actions_dir=_actions_dir,
             reserved_names=_inline_names,
             logger=lambda msg: print(f"[Actions] {msg}"),
         )
@@ -625,7 +648,7 @@ class AssistantWorkerLive:
         # Plugins must not collide with either an inline tool or a discovered action.
         _core_names = _inline_names | self._action_registry.names()
         self._plugin_registry = discover_plugins(
-            plugins_dir=_base_dir / "plugins",
+            plugins_dir=_plugins_dir,
             core_tool_names=_core_names,
             # Console gets the full boot transcript; the activity log gets only
             # what the user has to know about. Every plugin loading correctly is
@@ -800,7 +823,9 @@ class AssistantWorkerLive:
         is that it restores the voice with it — which would make the picker
         appear to do nothing. Losing context here is acceptable because changing
         voice is a deliberate, rare act; losing it on a dropped packet was not."""
-        self.request_reconnect(keep_context=False, reason="new voice")
+        new_voice = get_voice()
+        self.ui.write_log(f"SYS: Voice changed to {new_voice}.")
+        self.request_reconnect(keep_context=False, reason=f"voice ({new_voice})")
 
     def _on_audio_device_change(self):
         """Microphone or speaker changed. Both streams are opened inside the
@@ -808,6 +833,12 @@ class AssistantWorkerLive:
         but the conversation is kept, which is the whole reason resumption
         landed before this feature did."""
         self.request_reconnect(keep_context=True, reason="audio device")
+
+    def _on_volume_change(self, volume_pct: int):
+        """Volume slider moved (0–100). Stores a target linear scalar applied to each
+        PCM batch before it reaches the speaker — no session rebuild needed."""
+        self._target_volume = max(0.0, min(1.0, float(volume_pct) / 100.0))
+        self._output_volume = self._target_volume
 
     async def _watch_reconnect(self):
         """Session-scoped task: when a voluntary reconnect is requested, raise a
@@ -837,7 +868,16 @@ class AssistantWorkerLive:
         return url, key, f"{url}/auto-login?key={key}", manual
 
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        if not self._loop or not self.session or getattr(self, "_offline_active", False):
+            # Process via safe offline fallback manager
+            if hasattr(self, "_offline_mgr"):
+                resp, action = self._offline_mgr.handle_local_intent(text)
+                if resp:
+                    self.ui.write_log(f"{self._asst_name}: {resp}")
+                    self.ui.set_transcript(f"{self._asst_name}: {resp}")
+                    vol = int(getattr(self, "_target_volume", 1.0) * 100)
+                    threading.Thread(target=self._offline_mgr.speak, args=(resp, vol), daemon=True).start()
+                    return
             return
         # Respect wake-word sleep: a typed command must not be answered while
         # asleep either (the sleep gate is not just for the mic). Wake first with
@@ -934,6 +974,13 @@ class AssistantWorkerLive:
             if drained:
                 print(f"[ASSISTANT] ✋ Interrupted — {drained} audio chunks discarded")
         self.set_speaking(False)
+        # Flush sounddevice hardware/OS buffer immediately so speech cuts off with zero hangover
+        if self._out_stream:
+            try:
+                self._out_stream.abort()
+                self._out_stream.start()
+            except Exception:
+                pass
         # The words we were about to mouth are never going to be spoken now.
         self._visemes.reset()
         self._play_cursor = 0.0     # next batch starts a fresh timeline
@@ -1376,11 +1423,14 @@ class AssistantWorkerLive:
                     self.out_queue.put_nowait,
                     {"data": data, "mime_type": "audio/pcm"}
                 )
-                # Feed the live mic level to the HUD so the waveform reacts to
-                # the user's actual voice while listening. Purely cosmetic — any
-                # failure here must never disturb the mic.
+                # Feed smoothed mic level to the HUD and VoiceOrb so meters react smoothly
                 try:
-                    self.ui.set_audio_level(_pcm_level(indata))
+                    raw_lvl = _pcm_level(indata)
+                    if raw_lvl > self._mic_level_smooth:
+                        self._mic_level_smooth = self._mic_level_smooth * 0.6 + raw_lvl * 0.4
+                    else:
+                        self._mic_level_smooth = self._mic_level_smooth * 0.75 + raw_lvl * 0.25
+                    self.ui.set_audio_level(self._mic_level_smooth)
                 except Exception:
                     pass
 
@@ -1403,8 +1453,14 @@ class AssistantWorkerLive:
             _mic_dev  = audio_devices.resolve(_mic_name, "input")
             if _mic_dev is not None:
                 print(f"[ASSISTANT] 🎤 Input device: {_mic_name}")
+            elif _mic_name:
+                print(f"[ASSISTANT] ⚠️  Mic '{_mic_name}' unavailable — using default")
+                self.ui.write_log(
+                    f"SYS: Previous microphone '{_mic_name}' unavailable. Using default audio device."
+                )
             try:
                 _mic_stream = _open_mic(_mic_dev)
+                self._mic_stream = _mic_stream
             except Exception as _e:
                 # A device the picker listed but the driver will not open right
                 # now — exclusive mode, a webcam already in use, a virtual mic
@@ -1414,9 +1470,10 @@ class AssistantWorkerLive:
                     raise
                 print(f"[ASSISTANT] ⚠️  Mic '{_mic_name}' failed: {_e} — using default")
                 self.ui.write_log(
-                    f"SYS: Microphone '{_mic_name}' unavailable — using system default."
+                    f"SYS: Previous microphone '{_mic_name}' unavailable. Using default audio device."
                 )
                 _mic_stream = _open_mic(None)
+                self._mic_stream = _mic_stream
 
             with _mic_stream:
                 print("[ASSISTANT] 🎤 Mic stream open")
@@ -1425,6 +1482,8 @@ class AssistantWorkerLive:
         except Exception as e:
             print(f"[ASSISTANT] ❌ Mic: {e}")
             raise
+        finally:
+            self._mic_stream = None
 
     async def _flush_pending_vision(self) -> bool:
         """Send a captured frame immediately after its tool response.
@@ -1546,6 +1605,8 @@ class AssistantWorkerLive:
                             if full_in:
                                 self._last_out_logged = ""   # new exchange
                                 self.ui.write_log(f"You: {full_in}")
+                                if hasattr(self.ui, "set_transcript"):
+                                    self.ui.set_transcript(f"You: {full_in}")
                                 self._session_log.append(f"User: {full_in}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
@@ -1565,6 +1626,8 @@ class AssistantWorkerLive:
                             if full_out:
                                 self._last_out_logged = full_out
                                 self.ui.write_log(f"{self._asst_name}: {full_out}")
+                                if hasattr(self.ui, "set_transcript"):
+                                    self.ui.set_transcript(f"{self._asst_name}: {full_out}")
                                 self._session_log.append(f"{self._asst_name}: {full_out}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
@@ -1605,6 +1668,11 @@ class AssistantWorkerLive:
         _spk_dev  = audio_devices.resolve(_spk_name, "output")
         if _spk_dev is not None:
             print(f"[ASSISTANT] 🔊 Output device: {_spk_name}")
+        elif _spk_name:
+            print(f"[ASSISTANT] ⚠️ Output device '{_spk_name}' unavailable — using default")
+            self.ui.write_log(
+                f"SYS: Previous output device '{_spk_name}' unavailable. Using default audio device."
+            )
 
         def _open_spk(dev):
             st = sd.RawOutputStream(
@@ -1617,28 +1685,40 @@ class AssistantWorkerLive:
             st.start()
             return st
 
+        stream = None
         try:
             stream = _open_spk(_spk_dev)
         except Exception as _e:
             # A chosen output that the host API accepts by name but refuses to
             # open (exclusive mode, wrong sample rate, device asleep) must not
             # cost the user their voice. Fall back to the default and say so.
-            if _spk_dev is None:
-                raise
-            print(f"[ASSISTANT] ⚠️  Output device '{_spk_name}' failed: {_e} — using default")
-            self.ui.write_log(f"SYS: Speaker '{_spk_name}' unavailable — using system default.")
-            stream = _open_spk(None)
+            if _spk_dev is not None:
+                print(f"[ASSISTANT] ⚠️  Output device '{_spk_name}' failed: {_e} — using default")
+                self.ui.write_log(
+                    f"SYS: Previous output device '{_spk_name}' unavailable. Using default audio device."
+                )
+                try:
+                    stream = _open_spk(None)
+                except Exception as _e2:
+                    print(f"[ASSISTANT] ❌ Default output device also failed: {_e2}")
+                    self.ui.write_log("SYS: Audio output unavailable.")
+            else:
+                print(f"[ASSISTANT] ❌ Audio output failed: {_e}")
+                self.ui.write_log("SYS: Audio output unavailable.")
+
+        self._out_stream = stream
 
         # Ask the device how far behind the speakers actually are, rather than
         # assuming. This is what the echo tail is sized from, so a machine with a
         # large audio buffer gets a correspondingly longer guard — and one with a
         # tiny buffer is not penalised with a delay it does not need.
         try:
-            lat = float(getattr(stream, "latency", 0.0) or 0.0)
-            if 0.0 < lat < 1.0:
-                self._out_latency = lat
-            print(f"[ASSISTANT] 🔊 Output latency {self._out_latency*1000:.0f} ms "
-                  f"→ echo tail {(self._out_latency + _TAIL_MARGIN)*1000:.0f} ms")
+            if stream:
+                lat = float(getattr(stream, "latency", 0.0) or 0.0)
+                if 0.0 < lat < 1.0:
+                    self._out_latency = lat
+                print(f"[ASSISTANT] 🔊 Output latency {self._out_latency*1000:.0f} ms "
+                      f"→ echo tail {(self._out_latency + _TAIL_MARGIN)*1000:.0f} ms")
         except Exception:
             pass
 
@@ -1659,57 +1739,39 @@ class AssistantWorkerLive:
                         self._turn_done_event.clear()
                     continue
 
+                # Fresh audio arriving resets interruption state
+                self._interrupted = False
                 self.set_speaking(True)
 
                 # Batch all immediately-available chunks into one write to reduce
-                # thread-pool round-trips (was one asyncio.to_thread per 50ms slice).
-                # Cap at ~200 ms so interrupt() still stops audio within ~200 ms.
+                # thread-pool round-trips. Cap at ~100 ms (4800 bytes at 24 kHz / 16-bit mono)
+                # to minimize latency while maintaining smooth playback.
                 batch = bytearray(chunk)
-                while len(batch) < 9600:   # 9600 bytes ≈ 200 ms at 24 kHz / 16-bit mono
+                while len(batch) < 4800:
                     try:
                         batch.extend(self.audio_in_queue.get_nowait())
                     except asyncio.QueueEmpty:
                         break
 
+                if self._interrupted:
+                    continue
+
                 # Drive the HUD waveform and the avatar's mouth from Assistant Worker's
-                # own voice. The batch is up to 200 ms long, so we hand over a
-                # *schedule* of 20 ms viseme frames instead of a single averaged
-                # level and let the HUD play it out in step with the audio.
+                # own voice. The batch is up to 100 ms long, so we hand over a
+                # schedule of 20 ms viseme frames instead of a single averaged level.
                 try:
                     pcm = np.frombuffer(bytes(batch), dtype=np.int16)
                     hop = _VIS_HOP / RECEIVE_SAMPLE_RATE
                     frames = _pcm_visemes(pcm, sr=RECEIVE_SAMPLE_RATE)
-                    # When does this batch become audible? The stream was
-                    # started at launch and its callback has been pulling
-                    # silence ever since, so the first bytes of a reply reach
-                    # the speaker about one callback period later — NOT one
-                    # buffer later. `stream.latency` reports the buffer's
-                    # capacity, which is how much can be queued ahead, and on
-                    # Windows that is commonly 300-500 ms. Anchoring on it put
-                    # the entire schedule a buffer late; that is the half second
-                    # of lag, and it grew with whatever the device reported.
-                    #
-                    # After the anchor nothing needs measuring: the device
-                    # consumes at exactly realtime, so each batch sounds one
-                    # batch-duration after the one before it. The cursor is
-                    # re-anchored only when it leaves the range physically
-                    # possible — behind `now` means the device drained and this
-                    # batch starts a fresh stretch of speech, while further
-                    # ahead than the buffer can hold means it has drifted.
                     now = time.time()
                     horizon = self._out_latency + _CURSOR_SLACK
                     if not (now <= self._play_cursor <= now + horizon):
                         self._play_cursor = now + _FIRST_SOUND
                     at = self._play_cursor
-                    # Advance by the batch's own duration whether or not it
-                    # yielded frames, so a block too short to analyse cannot
-                    # shift everything after it out of step with the audio.
                     self._play_cursor += pcm.size / RECEIVE_SAMPLE_RATE
                     if frames:
                         frames = self._visemes.frames(frames, hop)
                         self.ui.push_visemes(frames, hop, at)
-                        # Barge-in needs to know what we are playing, not just
-                        # how loud: the guard subtracts this from the microphone.
                         self._out_level = max(f[0] for f in frames)
                         self._echo.note_output(pcm, RECEIVE_SAMPLE_RATE,
                                                self._out_level)
@@ -1722,16 +1784,41 @@ class AssistantWorkerLive:
                     pass
 
                 try:
-                    await asyncio.to_thread(stream.write, bytes(batch))
+                    if stream:
+                        cur_vol = self._current_volume
+                        tgt_vol = self._target_volume
+                        pcm_f = np.frombuffer(bytes(batch), dtype=np.int16).astype(np.float32)
+
+                        if abs(cur_vol - tgt_vol) > 1e-4:
+                            # Smooth volume ramping across the batch to prevent clicks/pops
+                            ramp = np.linspace(cur_vol, tgt_vol, len(pcm_f), dtype=np.float32)
+                            pcm_f *= ramp
+                            self._current_volume = tgt_vol
+                            write_bytes = np.clip(pcm_f, -32768, 32767).astype(np.int16).tobytes()
+                        elif tgt_vol != 1.0:
+                            pcm_f *= tgt_vol
+                            write_bytes = np.clip(pcm_f, -32768, 32767).astype(np.int16).tobytes()
+                        else:
+                            write_bytes = bytes(batch)
+
+                        if not self._interrupted:
+                            await asyncio.to_thread(stream.write, write_bytes)
                 except (RuntimeError, asyncio.CancelledError):
                     break   # executor shutting down — exit cleanly
+                except Exception as _we:
+                    print(f"[ASSISTANT] ⚠️ Play write error: {_we}")
         except Exception as e:
             print(f"[ASSISTANT] ❌ Play: {e}")
             raise
         finally:
             self.set_speaking(False)
-            stream.stop()
-            stream.close()
+            self._out_stream = None
+            if stream:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
 
     # ── Morning briefing ────────────────────────────────────────────────────────
 
@@ -1754,6 +1841,39 @@ class AssistantWorkerLive:
         lang = _val("language")
         name = _val("name")
         time_str = datetime.now().strftime("%H:%M")
+
+        # ── Safe Offline Adaptive Briefing ────────────────────────────────────
+        is_offline = (
+            getattr(self, "_offline_active", False) or
+            not self.session or
+            (hasattr(self, "_offline_mgr") and not self._offline_mgr.is_online())
+        )
+        if is_offline:
+            hour = datetime.now().hour
+            time_greeting = "Good morning" if hour < 12 else ("Good afternoon" if hour < 18 else "Good evening")
+            user_addr = f", {name}" if name else ""
+
+            batt_msg = ""
+            try:
+                import psutil
+                batt = psutil.sensors_battery()
+                if batt:
+                    pct = int(batt.percent)
+                    plugged = "plugged in" if getattr(batt, "power_plugged", False) else "on battery"
+                    batt_msg = f" Battery is at {pct}% and {plugged}."
+            except Exception:
+                pass
+
+            briefing_text = (
+                f"{time_greeting}{user_addr}. It is {time_str}. Assistant Worker is running in offline mode.{batt_msg} "
+                f"Local speech and system controls are ready."
+            )
+            self.ui.write_log(f"{self._asst_name}: {briefing_text}")
+            self.ui.set_transcript(f"{self._asst_name}: {briefing_text}")
+            vol = int(getattr(self, "_target_volume", 1.0) * 100)
+            if hasattr(self, "_offline_mgr"):
+                await asyncio.to_thread(self._offline_mgr.speak, briefing_text, vol)
+            return
 
         # Start fetching news immediately — runs in parallel while phase 1 plays
         loop = asyncio.get_event_loop()
@@ -2093,7 +2213,32 @@ class AssistantWorkerLive:
 
         while True:
             try:
-                print("[ASSISTANT] Connecting...")
+                voice_mode = get_voice_mode()
+                self._voice_mode = voice_mode
+                if voice_mode == "offline":
+                    self._offline_active = True
+                    self.ui.set_cloud_mode("OFFLINE")
+                    self.ui.set_state("READY")
+                    self.ui.write_log(f"SYS: {self._asst_name} running in OFFLINE mode.")
+                    if not getattr(self, "_briefing_done", False):
+                        self._briefing_done = True
+                        asyncio.create_task(self._send_startup_briefing())
+                    while get_voice_mode() == "offline":
+                        await asyncio.sleep(1.0)
+                    self._offline_active = False
+                    continue
+
+                # Safe engine transition: never switch or connect while audio is active
+                while getattr(self, "_is_speaking", False) or self._tail_active():
+                    await asyncio.sleep(0.1)
+
+                is_reconnect = getattr(self, "_reconnect_attempt", 0) > 0
+                if is_reconnect:
+                    self.ui.set_cloud_mode("RECONNECTING")
+                    print(f"[ASSISTANT] Reconnecting to Gemini Live (attempt {self._reconnect_attempt})...")
+                else:
+                    self.ui.set_cloud_mode("CONNECTING")
+                    print("[ASSISTANT] Connecting to Gemini Live...")
                 self.ui.set_state("THINKING")
                 # Pick the rung to open the conversation on. A model resting
                 # off a quota limit is skipped; the name is published back to
@@ -2131,6 +2276,11 @@ class AssistantWorkerLive:
                     self._vision_last_time     = 0.0
                     self._interrupted          = False
 
+                    self._offline_active       = False
+                    self._reconnect_attempt    = 0
+                    if hasattr(self, "_offline_mgr"):
+                        self._offline_mgr.backoff.reset()
+                    self.ui.set_cloud_mode("CLOUD")
                     print("[ASSISTANT] Connected.")
                     if _resumed_with:
                         # Say it plainly: the difference between "it reconnected"
@@ -2274,49 +2424,240 @@ class AssistantWorkerLive:
                     _conn_backoff = 3
                     continue
 
-                # Network / timeout errors — log clearly and back off
+                # Network / timeout errors — log clearly and back off with stepped schedule & anti-flapping
                 is_net_err = any(k in err_str for k in (
                     "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
-                    "ConnectionRefusedError", "OSError", "Cannot connect",
+                    "ConnectionRefusedError", "OSError", "Cannot connect", "socket",
                 ))
                 if is_net_err:
-                    _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
-                    self._conn_backoff = _conn_backoff
-                    self.ui.write_log(
-                        f"NET: Connection failed — retrying in {_conn_backoff}s. "
-                        "(a VPN may be required)"
-                    )
+                    self._reconnect_attempt = getattr(self, "_reconnect_attempt", 0) + 1
+                    delay = self._offline_mgr.backoff.next_delay() if hasattr(self, "_offline_mgr") else 5
+                    self._conn_backoff = delay
+                    if getattr(self, "_voice_mode", "automatic") == "automatic":
+                        self._offline_active = True
+                        self.ui.set_cloud_mode("OFFLINE")
+                        self.ui.set_state("READY")
+                        self.ui.write_log(
+                            f"SYS: Cloud connection unavailable — switched to OFFLINE mode (retry {self._reconnect_attempt} in {delay}s)."
+                        )
+                        if not getattr(self, "_briefing_done", False):
+                            self._briefing_done = True
+                            asyncio.create_task(self._send_startup_briefing())
+
+                        # Flap-protected wait loop
+                        waited = 0
+                        while get_voice_mode() == "automatic" and not self._offline_mgr.check_connectivity():
+                            await asyncio.sleep(min(3.0, delay))
+                            waited += 3
+                            if waited >= delay:
+                                break
+
+                        if self._offline_mgr.is_online():
+                            self._offline_active = False
+                            self.ui.write_log("SYS: Stable connection restored — reconnecting to Gemini Live...")
+                            self.ui.set_cloud_mode("RECONNECTING")
+                            continue
+                    else:
+                        self.ui.write_log(
+                            f"NET: Connection failed — retrying in {delay}s. "
+                            "(a VPN may be required)"
+                        )
                 else:
-                    self._conn_backoff = 3
+                    if hasattr(self, "_offline_mgr"):
+                        self._offline_mgr.backoff.reset()
+                    self._conn_backoff = 5
             finally:
                 self.session = None
                 # Only save if there was a real conversation (≥3 turns)
                 if len(self._session_log) >= 3:
                     asyncio.create_task(self._save_session_summary())
 
+            # Safe engine transition: ensure audio is stopped before restarting
             self.set_speaking(False)
+            while getattr(self, "_is_speaking", False) or self._tail_active():
+                await asyncio.sleep(0.1)
             self.ui.set_state("SLEEPING")
 
             if self._dashboard:
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
 
-            delay = getattr(self, "_conn_backoff", 3)
+            delay = getattr(self, "_conn_backoff", 5)
+            self.ui.set_cloud_mode("RECONNECTING")
             print(f"[ASSISTANT] Reconnecting in {delay}s...")
             await asyncio.sleep(delay)
 
+    def stop(self):
+        """Cleanly terminate all audio streams, session, and background tasks."""
+        print("[ASSISTANT] Clean shutdown starting...")
+        # 1. Stop speaker output
+        if self._out_stream:
+            try:
+                self._out_stream.abort()
+                self._out_stream.stop()
+                self._out_stream.close()
+            except Exception:
+                pass
+            self._out_stream = None
+
+        # 2. Stop microphone capture
+        if hasattr(self, "_mic_stream") and self._mic_stream:
+            try:
+                self._mic_stream.stop()
+                self._mic_stream.close()
+            except Exception:
+                pass
+            self._mic_stream = None
+
+        # 3. Stop push-to-talk
+        if getattr(self, "_ptt", None):
+            try:
+                self._ptt.stop()
+            except Exception:
+                pass
+            self._ptt = None
+
+        # 4. Close Gemini session
+        if self.session and getattr(self, "_loop", None) and self._loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(self.session.close(), self._loop)
+            except Exception:
+                pass
+
+        print("[ASSISTANT] Clean shutdown complete.")
+
 def main():
-    ui = AssistantWorkerUI("face.png")
+    from core.paths import FACE_MODEL_PATH
+    ui = AssistantWorkerUI(str(FACE_MODEL_PATH))
+
+    # Single-instance local IPC server to restore window on duplicate launch
+    from PyQt6.QtNetwork import QLocalServer
+    _SOCKET_NAME = "AssistantWorker_SingleInstance_IPC"
+    QLocalServer.removeServer(_SOCKET_NAME)
+    _ipc_server = QLocalServer()
+    if _ipc_server.listen(_SOCKET_NAME):
+        def _on_ipc_conn():
+            client = _ipc_server.nextPendingConnection()
+            if client:
+                def _on_ipc_ready():
+                    msg = bytes(client.readAll()).decode("utf-8", errors="ignore").strip()
+                    if msg == "ACTIVATE":
+                        print("[IPC] Restore window requested by second instance.")
+                        ui._win._restore_from_tray()
+                client.readyRead.connect(_on_ipc_ready)
+        _ipc_server.newConnection.connect(_on_ipc_conn)
+
+    assistant_worker_ref = [None]
 
     def runner():
         ui.wait_for_api_key()
         assistant_worker = AssistantWorkerLive(ui)
+        assistant_worker_ref[0] = assistant_worker
         try:
             asyncio.run(assistant_worker.run())
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             print("\n🔴 Shutting down...")
+        finally:
+            assistant_worker.stop()
+
+    def on_shutdown():
+        if assistant_worker_ref[0]:
+            assistant_worker_ref[0].stop()
+        if _ipc_server.isListening():
+            _ipc_server.close()
+            QLocalServer.removeServer(_SOCKET_NAME)
+
+    ui.on_shutdown = on_shutdown
+
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app:
+        app.aboutToQuit.connect(on_shutdown)
 
     threading.Thread(target=runner, daemon=True).start()
     ui.root.mainloop()
+    on_shutdown()
+
+def _show_fatal_error(msg: str) -> None:
+    """Show a simple diagnostic GUI error dialog when the app fails to start."""
+    try:
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        from core.paths import LOGS_DIR
+        _app = QApplication.instance() or QApplication(sys.argv)
+        box = QMessageBox()
+        box.setWindowTitle("Assistant Worker")
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setText("Assistant Worker encountered an error.\n\nA diagnostic log has been saved.")
+        log_file = LOGS_DIR / "assistant_worker.log"
+        box.setInformativeText(f"Log location:\n{log_file}")
+        box.exec()
+    except Exception:
+        pass   # if Qt itself is broken, nothing we can do
+
 
 if __name__ == "__main__":
-    main()
+    # ── Logging (must be first) ──────────────────────────────────────────
+    import logging
+    try:
+        from core.app_logging import setup_logging
+        _log = setup_logging()
+        _log.info("Assistant Worker starting (frozen=%s)", getattr(sys, "frozen", False))
+    except Exception as _le:
+        logging.basicConfig(level=logging.INFO)
+        _log = logging.getLogger(__name__)
+        _log.warning("Could not configure file logging: %s", _le)
+
+    # ── Single-instance IPC check (restore existing window if running) ───
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtNetwork import QLocalSocket
+        _pre_app = QApplication.instance() or QApplication(sys.argv)
+        _sock = QLocalSocket()
+        _sock.connectToServer("AssistantWorker_SingleInstance_IPC")
+        if _sock.waitForConnected(500):
+            _log.info("Another instance is already running — sending ACTIVATE and exiting.")
+            _sock.write(b"ACTIVATE\n")
+            _sock.waitForBytesWritten(1000)
+            _sock.disconnectFromServer()
+            sys.exit(0)
+    except Exception as _se:
+        _log.debug("IPC check notice: %s", _se)
+
+    # ── Single-instance guard (Windows named mutex) ───────────────────────
+    _mutex = None
+    try:
+        import ctypes
+        _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "AssistantWorkerSingleInstance")
+        _last_err = ctypes.windll.kernel32.GetLastError()
+        if _last_err == 183:  # ERROR_ALREADY_EXISTS
+            _log.warning("Another instance is already running (mutex locked) — exiting.")
+            sys.exit(0)
+    except Exception as _me:
+        _log.warning("Single-instance mutex failed: %s", _me)
+
+    # ── Global exception handler ─────────────────────────────────────────
+    def _handle_exception(exc_type, exc_value, exc_tb):
+        import traceback as _tb
+        msg = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+        _log.critical("Unhandled exception:\n%s", msg)
+        if getattr(sys, "frozen", False):
+            _show_fatal_error(str(exc_value))
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _handle_exception
+
+    # ── Launch ───────────────────────────────────────────────────────────
+    try:
+        main()
+    except Exception as _err:
+        import traceback as _tb
+        _log.critical("Fatal startup error: %s\n%s", _err, _tb.format_exc())
+        if getattr(sys, "frozen", False):
+            _show_fatal_error(str(_err))
+        raise
+    finally:
+        if _mutex:
+            try:
+                ctypes.windll.kernel32.ReleaseMutex(_mutex)
+                ctypes.windll.kernel32.CloseHandle(_mutex)
+            except Exception:
+                pass

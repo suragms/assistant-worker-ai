@@ -60,7 +60,14 @@ def _get_macos_wifi_interface() -> str:
 
 def volume_up():
     if _OS == "Windows":
-        for _ in range(5): pyautogui.press("volumeup")
+        try:
+            import ctypes
+            # VK_VOLUME_UP = 0xAF
+            for _ in range(5):
+                ctypes.windll.user32.keybd_event(0xAF, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(0xAF, 0, 2, 0)
+        except Exception:
+            for _ in range(5): pyautogui.press("volumeup")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             "set volume output volume (output volume of (get volume settings) + 10)"],
@@ -71,7 +78,14 @@ def volume_up():
 
 def volume_down():
     if _OS == "Windows":
-        for _ in range(5): pyautogui.press("volumedown")
+        try:
+            import ctypes
+            # VK_VOLUME_DOWN = 0xAE
+            for _ in range(5):
+                ctypes.windll.user32.keybd_event(0xAE, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(0xAE, 0, 2, 0)
+        except Exception:
+            for _ in range(5): pyautogui.press("volumedown")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             "set volume output volume (output volume of (get volume settings) - 10)"],
@@ -82,7 +96,13 @@ def volume_down():
 
 def volume_mute():
     if _OS == "Windows":
-        pyautogui.press("volumemute")
+        try:
+            import ctypes
+            # VK_VOLUME_MUTE = 0xAD
+            ctypes.windll.user32.keybd_event(0xAD, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(0xAD, 0, 2, 0)
+        except Exception:
+            pyautogui.press("volumemute")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e", "set volume with output muted"],
             capture_output=True)
@@ -91,24 +111,20 @@ def volume_mute():
             capture_output=True)
 
 def volume_get() -> int | None:
-    """Current master volume 0-100, or None if this platform will not say.
-
-    Undo needs a "before" value, and reading one is cheap on every OS we
-    support. Where it is not readable the action simply is not registered as
-    undoable — a wrong undo is worse than no undo."""
+    """Current master volume 0-100, or None if this platform will not say."""
     try:
         if _OS == "Windows":
-            import math
-            from ctypes import cast, POINTER
-            from comtypes import CLSCTX_ALL
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-            devices   = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            vol       = cast(interface, POINTER(IAudioEndpointVolume))
-            db        = vol.GetMasterVolumeLevel()
-            if db <= -65.0:
-                return 0
-            return max(0, min(100, round(10 ** (db / 20) * 100)))
+            from pycaw.pycaw import AudioUtilities
+            dev = AudioUtilities.GetSpeakers()
+            if hasattr(dev, "EndpointVolume") and dev.EndpointVolume is not None:
+                return max(0, min(100, round(dev.EndpointVolume.GetMasterVolumeLevelScalar() * 100)))
+            if hasattr(dev, "Activate"):
+                from ctypes import cast, POINTER
+                from comtypes import CLSCTX_ALL
+                from pycaw.pycaw import IAudioEndpointVolume
+                interface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                vol       = cast(interface, POINTER(IAudioEndpointVolume))
+                return max(0, min(100, round(vol.GetMasterVolumeLevelScalar() * 100)))
         if _OS == "Darwin":
             r = subprocess.run(["osascript", "-e", "output volume of (get volume settings)"],
                                capture_output=True, text=True, timeout=5)
@@ -163,20 +179,28 @@ def volume_set(value: int):
     value = max(0, min(100, int(value)))
     if _OS == "Windows":
         try:
-            import math
-            from ctypes import cast, POINTER
-            from comtypes import CLSCTX_ALL
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-            devices   = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            vol       = cast(interface, POINTER(IAudioEndpointVolume))
-            vol_db    = -65.25 if value == 0 else max(-65.25, 20 * math.log10(value / 100))
-            vol.SetMasterVolumeLevel(vol_db, None)
-            return
+            from pycaw.pycaw import AudioUtilities
+            dev = AudioUtilities.GetSpeakers()
+            if hasattr(dev, "EndpointVolume") and dev.EndpointVolume is not None:
+                dev.EndpointVolume.SetMasterVolumeLevelScalar(value / 100.0, None)
+                return
+            if hasattr(dev, "Activate"):
+                from ctypes import cast, POINTER
+                from comtypes import CLSCTX_ALL
+                from pycaw.pycaw import IAudioEndpointVolume
+                interface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                vol       = cast(interface, POINTER(IAudioEndpointVolume))
+                vol.SetMasterVolumeLevelScalar(value / 100.0, None)
+                return
         except Exception as e:
-            print(f"[Settings] pycaw failed, using keypress fallback: {e}")
-            pyautogui.press("volumemute")
-            pyautogui.press("volumemute")
+            print(f"[Settings] pycaw volume_set failed: {e}")
+            try:
+                import ctypes
+                # Fallback: mute toggle or keybd_event
+                ctypes.windll.user32.keybd_event(0xAD, 0, 0, 0)
+                ctypes.windll.user32.keybd_event(0xAD, 0, 2, 0)
+            except Exception:
+                pass
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e", f"set volume output volume {value}"],
             capture_output=True)

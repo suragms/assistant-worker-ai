@@ -45,22 +45,27 @@ class AvatarWidget(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        try:
+            if not painter.isActive():
+                return
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        rect = self.rect()
-        cx = rect.width() / 2
-        cy = rect.height() / 2
-        radius = 45
+            rect = self.rect()
+            cx = rect.width() / 2
+            cy = rect.height() / 2
+            radius = 45
 
-        # Simple gradient circle
-        gradient = QRadialGradient(cx, cy, radius)
-        gradient.setColorAt(0.0, QColor(50, 50, 58))
-        gradient.setColorAt(1.0, QColor(20, 20, 24))
+            # Simple gradient circle
+            gradient = QRadialGradient(cx, cy, radius)
+            gradient.setColorAt(0.0, QColor(50, 50, 58))
+            gradient.setColorAt(1.0, QColor(20, 20, 24))
 
-        painter.setBrush(gradient)
-        painter.setPen(QColor(99, 102, 241))
-        painter.drawEllipse(int(cx - radius), int(cy - radius), int(radius * 2), int(radius * 2))
+            painter.setBrush(gradient)
+            painter.setPen(QColor(99, 102, 241))
+            painter.drawEllipse(int(cx - radius), int(cy - radius), int(radius * 2), int(radius * 2))
 
-        # "AI" text
-        painter.setPen(QColor(99, 102, 241))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "AI")
+            # "AI" text
+            painter.setPen(QColor(99, 102, 241))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "AI")
+        finally:
+            painter.end()

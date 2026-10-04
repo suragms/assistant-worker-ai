@@ -6,14 +6,16 @@ from pathlib import Path
 import sys
 
 
-def get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+try:
+    from core.paths import MEMORY_FILE as MEMORY_PATH
+except ImportError:
+    def get_base_dir() -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).parent
+        return Path(__file__).resolve().parent.parent
 
-
-BASE_DIR         = get_base_dir()
-MEMORY_PATH      = BASE_DIR / "memory" / "long_term.json"
+    BASE_DIR    = get_base_dir()
+    MEMORY_PATH = BASE_DIR / "memory" / "long_term.json"
 _lock            = Lock()
 MAX_VALUE_LENGTH = 380
 
@@ -381,7 +383,7 @@ def search_memory(query: str, limit: int = 8) -> str:
 
 
 def all_entries_for_ui() -> list[dict]:
-    """Flat list for the memory panel: what JARVIS knows, and when it learned it.
+    """Flat list for the memory panel: what Assistant Worker knows, and when it learned it.
     Sorted newest first so the panel opens on what changed most recently."""
     memory = load_memory()
     rows = []
