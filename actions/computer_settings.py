@@ -67,7 +67,8 @@ def volume_up():
                 ctypes.windll.user32.keybd_event(0xAF, 0, 0, 0)
                 ctypes.windll.user32.keybd_event(0xAF, 0, 2, 0)
         except Exception:
-            for _ in range(5): pyautogui.press("volumeup")
+            if _PYAUTOGUI:
+                for _ in range(5): pyautogui.press("volumeup")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             "set volume output volume (output volume of (get volume settings) + 10)"],
@@ -85,7 +86,8 @@ def volume_down():
                 ctypes.windll.user32.keybd_event(0xAE, 0, 0, 0)
                 ctypes.windll.user32.keybd_event(0xAE, 0, 2, 0)
         except Exception:
-            for _ in range(5): pyautogui.press("volumedown")
+            if _PYAUTOGUI:
+                for _ in range(5): pyautogui.press("volumedown")
     elif _OS == "Darwin":
         subprocess.run(["osascript", "-e",
             "set volume output volume (output volume of (get volume settings) - 10)"],
@@ -616,7 +618,8 @@ def shutdown_computer():
     else:
         subprocess.run(["systemctl", "poweroff"], capture_output=True)
 
-ACTION_MAP: dict[str, callable] = {
+from typing import Callable
+ACTION_MAP: dict[str, Callable] = {
     "volume_up":           volume_up,
     "volume_down":         volume_down,
     "mute":                volume_mute,

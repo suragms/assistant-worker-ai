@@ -85,18 +85,44 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
         return img_bytes, f"image/{source_format.lower()}"
 
 
+def _ensure_desktop_attached():
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            hdesk = u32.OpenDesktopW("Default", 0, False, 0x01FF)
+            if hdesk:
+                u32.SetThreadDesktop(hdesk)
+                u32.CloseDesktop(hdesk)
+        except Exception:
+            pass
+
+
 def _capture_screen() -> tuple[bytes, str]:
+    _ensure_desktop_attached()
 
-    if not _MSS:
-        raise RuntimeError("mss is not installed. Run: pip install mss")
+    if _MSS:
+        try:
+            with mss.mss() as sct:
+                monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
+                target   = monitors[1] if len(monitors) > 1 else monitors[0]
+                shot     = sct.grab(target)
+                png      = mss.tools.to_png(shot.rgb, shot.size)
+            return _compress(png, "PNG")
+        except Exception as e:
+            print(f"[Vision] ⚠️  MSS capture failed ({e}), falling back to PIL.ImageGrab")
 
-    with mss.mss() as sct:
-        monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
-        target   = monitors[1] if len(monitors) > 1 else monitors[0]
-        shot     = sct.grab(target)
-        png      = mss.tools.to_png(shot.rgb, shot.size)
+    if _PIL:
+        try:
+            from PIL import ImageGrab
+            im = ImageGrab.grab()
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=_JPEG_Q)
+            return buf.getvalue(), "image/jpeg"
+        except Exception as e:
+            print(f"[Vision] ⚠️  ImageGrab fallback failed: {e}")
 
-    return _compress(png, "PNG")
+    raise RuntimeError("Screen capture failed: neither mss nor ImageGrab could capture the display.")
 
 
 def _cv2_backend() -> int:

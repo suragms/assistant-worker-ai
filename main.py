@@ -312,7 +312,7 @@ def _load_system_prompt() -> str:
         return PROMPT_PATH.read_text(encoding="utf-8")
     except Exception:
         return (
-            f"You are {name}, Surag's personal AI assistant. "
+            "You are Jarvis, Surag's personal AI assistant. "
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )
@@ -1035,9 +1035,8 @@ class AssistantWorkerLive:
         _addr = (f"ADDRESS: Always call the user '{_user_name}'."
                  if _user_name
                  else 'ADDRESS: Address the user with the ordinary respectful form '
-                      'for a superior in the language you are currently speaking — '
-                      f'the user name "{_user_name}" in English, its everyday equivalent in any other '
-                      'language. Never an archaic or aristocratic form, and never '
+                      'for a superior in the language you are currently speaking. '
+                      'Never an archaic or aristocratic form, and never '
                       'the form from a different language than the one you are '
                       'speaking in this sentence.')
         identity_ctx = (
@@ -2421,7 +2420,7 @@ class AssistantWorkerLive:
                     while not self.ui._win._ready:
                         await asyncio.sleep(1)
                     print("[ASSISTANT] New API key saved — reconnecting...")
-                    _conn_backoff = 3
+                    self._conn_backoff = 3
                     continue
 
                 # Network / timeout errors — log clearly and back off with stepped schedule & anti-flapping
@@ -2574,7 +2573,10 @@ def main():
         app.aboutToQuit.connect(on_shutdown)
 
     threading.Thread(target=runner, daemon=True).start()
-    ui.root.mainloop()
+
+    if app:
+        app.exec()
+
     on_shutdown()
 
 def _show_fatal_error(msg: str) -> None:

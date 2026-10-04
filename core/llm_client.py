@@ -339,7 +339,7 @@ def call_llm_text(
     Used by planner, executor, error_handler, code_helper, dev_agent.
     """
     url, default_model = get_llm_settings()
-    endpoint = f"{url}/api/chat"
+    provider = get_llm_provider()
     m        = model or default_model
 
     messages: list[dict] = []
@@ -347,10 +347,28 @@ def call_llm_text(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    payload = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600}}
+    if provider == "openai":
+        endpoint = f"{url}/v1/chat/completions"
+        payload = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
+        try:
+            resp = requests.post(endpoint, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            choices = resp.json().get("choices", [])
+            if choices:
+                return (choices[0].get("message", {}).get("content") or "").strip()
+            return ""
+        except requests.exceptions.ConnectionError:
+            raise RuntimeError(
+                f"Cannot connect to OpenAI-compatible server at {url}."
+            )
+        except Exception as e:
+            raise RuntimeError(f"LLM text call failed: {e}")
+    else:
+        endpoint = f"{url}/api/chat"
+        payload = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600}}
 
-    try:
-        resp = requests.post(endpoint, json=payload, timeout=timeout)
+        try:
+            resp = requests.post(endpoint, json=payload, timeout=timeout)
         resp.raise_for_status()
         return (resp.json().get("message", {}).get("content") or "").strip()
     except requests.exceptions.ConnectionError:

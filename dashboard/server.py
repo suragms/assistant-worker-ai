@@ -326,7 +326,7 @@ def _ensure_crypto_js() -> None:
         print(f"[Dashboard] Encryption will fall back to CDN load on client.")
 
 
-_ensure_crypto_js()
+# We defer _ensure_crypto_js() until serve() is called
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -851,7 +851,8 @@ class DashboardServer:
         User types IP:8001 → Chrome tries https → self-signed cert warning → accept once → done."""
         ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
         ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
-        asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT + 1)
+        loop = asyncio.get_running_loop() if hasattr(asyncio, "get_running_loop") else asyncio.get_event_loop()
+        loop.run_in_executor(None, _ensure_network_access, PORT + 1)
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=PORT + 1, log_level="warning",
             ssl_keyfile=str(ssl_key), ssl_certfile=str(ssl_cert),
@@ -865,9 +866,12 @@ class DashboardServer:
             print("[Dashboard] Run:  pip install fastapi 'uvicorn[standard]' cryptography")
             return
 
+        _ensure_crypto_js()
+
         # Firewall setup runs in a thread — uvicorn starts immediately,
         # no waiting for UAC dialogs or subprocess timeouts.
-        asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
+        loop = asyncio.get_running_loop() if hasattr(asyncio, "get_running_loop") else asyncio.get_event_loop()
+        loop.run_in_executor(None, _ensure_network_access, PORT)
 
         # Generate the TLS pair on first run so no private key ships in the repo.
         _ensure_certs()

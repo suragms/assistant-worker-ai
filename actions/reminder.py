@@ -35,7 +35,8 @@ def _scripts_dir() -> Path:
 
 
 def _sanitise(text: str, max_len: int = 200) -> str:
-    return (
+    from xml.sax.saxutils import escape
+    clean = (
         text.replace("\\", "")
             .replace('"', "")
             .replace("'", "")
@@ -43,6 +44,7 @@ def _sanitise(text: str, max_len: int = 200) -> str:
             .replace("\r", "")
             .strip()
     )[:max_len]
+    return escape(clean)
 
 def _write_notify_script(task_name: str, message: str, os_name: str) -> Path:
     script_path = _scripts_dir() / f"{task_name}.py"
@@ -99,9 +101,8 @@ except Exception:
 if not notified:
     try:
         import subprocess
-        script = 'display notification "{{}}" with title "Assistant Worker Reminder"'.format(
-            message.replace('"', '')
-        )
+        msg_clean = message.replace('"', '').replace('{{', '').replace('}}', '')
+        script = f'display notification "{{msg_clean}}" with title "Assistant Worker Reminder"'
         subprocess.run(["osascript", "-e", script], check=False)
     except Exception:
         pass

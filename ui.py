@@ -3500,6 +3500,12 @@ class AssistantWorkerWindow(QMainWindow):
         self._clock_tmr.start(1000)
         self._tick_clock()
 
+        self._current_mic_level = 0.0
+        self._displayed_mic_pct = -1
+        self._mic_meter_tmr = QTimer(self)
+        self._mic_meter_tmr.timeout.connect(self._tick_mic_meter)
+        self._mic_meter_tmr.start(33)
+
         # Metric update timer
         # self._metric_tmr = QTimer(self)
         # self._metric_tmr.timeout.connect(self._update_metrics)
@@ -4425,6 +4431,15 @@ class AssistantWorkerWindow(QMainWindow):
         self._clock_lbl.setText(time.strftime("%H:%M:%S"))
         self._date_lbl.setText(time.strftime("%a %d %b %Y"))
 
+    def _tick_mic_meter(self):
+        if hasattr(self, "_mic_level_bar") and self._mic_level_bar:
+            pct = int(self._current_mic_level * 100)
+            if pct != self._displayed_mic_pct:
+                self._displayed_mic_pct = pct
+                self._mic_level_bar.setValue(pct)
+                if hasattr(self, "_mic_level_pct") and self._mic_level_pct:
+                    self._mic_level_pct.setText(f"{pct}%")
+
     def _build_left_panel(self) -> QWidget:
         w = QWidget()
         w.setFixedWidth(_LEFT_W)
@@ -5006,15 +5021,11 @@ class AssistantWorkerWindow(QMainWindow):
             lv = max(0.0, min(1.0, float(level)))
         except (TypeError, ValueError):
             return
+        self._current_mic_level = lv
         if hasattr(self, "hud") and self.hud:
             self.hud.set_audio_level(lv)
         if hasattr(self, "_voice_orb") and self._voice_orb:
             self._voice_orb.set_audio_level(lv)
-        if hasattr(self, "_mic_level_bar") and self._mic_level_bar:
-            pct = int(lv * 100)
-            self._mic_level_bar.setValue(pct)
-            if hasattr(self, "_mic_level_pct") and self._mic_level_pct:
-                self._mic_level_pct.setText(f"{pct}%")
 
     def _build_quick_drawer(self) -> QWidget:
         """Floating overlay panel shown when the ⚙ header button is toggled."""

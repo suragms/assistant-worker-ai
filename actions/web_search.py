@@ -96,6 +96,9 @@ def _gemini_search(query: str) -> str:
         _note_gemini_error(e)
         raise
 
+    if not response.candidates:
+        raise ValueError("Gemini returned no candidates (possible safety block).")
+
     text = ""
     for part in response.candidates[0].content.parts:
         if hasattr(part, "text") and part.text:

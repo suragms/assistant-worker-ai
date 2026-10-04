@@ -372,7 +372,7 @@ async def _live_turn(parts: list, system: str, key: str, timeout_s: float) -> st
     from google import genai
     from google.genai import types as gtypes
 
-    cl = genai.Client(api_key=key, http_options={"api_version": "v1beta"})
+    cl = genai.Client(api_key=key, http_options=gtypes.HttpOptions(api_version="v1beta", timeout=int(timeout_s)*1000))
     # Silence the persona, or it answers instead of complying.
     #
     # These are conversational models and they behave like it: asked "Reply with
@@ -455,7 +455,12 @@ def _live_call(contents, config, timeout_ms: int, key: str):
     try:
         th = threading.Thread(target=runner, daemon=True, name="gemini-live-oneshot")
         th.start()
-        th.join(timeout=max(15.0, timeout_ms / 1000.0 + 20.0))
+        # Thread join timeout should be larger than asyncio timeout but
+        # not infinite. Wait the timeout_ms + 10s.
+        join_timeout = max(15.0, timeout_ms / 1000.0 + 10.0)
+        th.join(timeout=join_timeout)
+        if th.is_alive():
+            raise TimeoutError("Gemini live one-shot thread timed out and did not cleanly exit.")
     finally:
         _LIVE_SLOTS.release()
     if "error" in box:
@@ -538,10 +543,44 @@ def as_json(contents, tier: str = FAST, config=None,
     raw = text(contents, tier=tier, config=config, timeout_ms=timeout_ms, key=key)
     if not raw:
         return default
-    if "{" in raw and "}" in raw:
-        raw = raw[raw.find("{"): raw.rfind("}") + 1]
-    elif "[" in raw and "]" in raw:
-        raw = raw[raw.find("["): raw.rfind("]") + 1]
+    # Handle markdown code blocks first
+    if "```json" in raw:
+        raw = raw.split("```json")[-1].split("```")[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```")[1].strip()
+
+    # Try finding outermost structures but be careful with multi-object responses
+    raw = raw.strip()
+    first_brace = raw.find("{")
+    first_bracket = raw.find("[")
+
+    if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+        # We likely have an object, find matching closing brace using stack to avoid splitting between objects
+        stack = 0
+        end_idx = -1
+        for i, char in enumerate(raw[first_brace:]):
+            if char == '{': stack += 1
+            elif char == '}': stack -= 1
+
+            if stack == 0:
+                end_idx = first_brace + i
+                break
+        if end_idx != -1:
+            raw = raw[first_brace:end_idx + 1]
+    elif first_bracket != -1:
+        # Array
+        stack = 0
+        end_idx = -1
+        for i, char in enumerate(raw[first_bracket:]):
+            if char == '[': stack += 1
+            elif char == ']': stack -= 1
+
+            if stack == 0:
+                end_idx = first_bracket + i
+                break
+        if end_idx != -1:
+            raw = raw[first_bracket:end_idx + 1]
+
     try:
         return json.loads(raw)
     except Exception as e:
