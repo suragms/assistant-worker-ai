@@ -21,10 +21,28 @@ import re
 import subprocess
 import sys
 import time
+import os
 from pathlib import Path
 from typing import Callable, Generator
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
+
 import requests
+
+def _req_post(url, **kwargs):
+    import os
+    headers = kwargs.get("headers", {})
+    if "api.groq.com" in url and os.environ.get("GROQ_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.environ['GROQ_API_KEY']}"
+    elif "openrouter.ai" in url and os.environ.get("OPENROUTER_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.environ['OPENROUTER_API_KEY']}"
+    kwargs["headers"] = headers
+    return requests.post(url, **kwargs)
+
 
 # Matches a sentence boundary: [.!?] followed by whitespace, or a blank line.
 # Avoids splitting on decimals (3.5) because those have no space after the dot.
@@ -156,7 +174,7 @@ def warmup_model(system_prompt: str | None = None) -> bool:
             "max_tokens": 1,
         }
         try:
-            resp = requests.post(f"{url}/v1/chat/completions", json=payload, timeout=180)
+            resp = _req_post(f"{url}/v1/chat/completions", json=payload, timeout=180)
             resp.raise_for_status()
             print(f"[LLM] '{model}' ready (OpenAI-compatible server).")
             return True
@@ -175,7 +193,7 @@ def warmup_model(system_prompt: str | None = None) -> bool:
         "options":    {"num_predict": 1, "num_gpu": 99},
     }
     try:
-        resp = requests.post(f"{url}/api/chat", json=payload, timeout=180)
+        resp = _req_post(f"{url}/api/chat", json=payload, timeout=180)
         resp.raise_for_status()
         print(f"[LLM] '{model}' loaded and KV cache primed.")
         return True
@@ -252,7 +270,7 @@ def call_llm(
             payload["tools"]       = tools
             payload["tool_choice"] = "auto"
         try:
-            resp = requests.post(endpoint, json=payload, timeout=timeout)
+            resp = _req_post(endpoint, json=payload, timeout=timeout)
             resp.raise_for_status()
             choice = resp.json().get("choices", [{}])[0]
             msg    = choice.get("message", {})
@@ -292,7 +310,7 @@ def call_llm(
         payload["tools"] = tools
 
     try:
-        resp = requests.post(endpoint, json=payload, timeout=timeout)
+        resp = _req_post(endpoint, json=payload, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
         msg  = data.get("message", {})
@@ -304,7 +322,7 @@ def call_llm(
         print(f"[LLM] ConnectionError — trying to restart Ollama… ({e})")
         if ensure_ollama_running():
             try:
-                resp = requests.post(endpoint, json=payload, timeout=timeout)
+                resp = _req_post(endpoint, json=payload, timeout=timeout)
                 resp.raise_for_status()
                 data = resp.json()
                 msg  = data.get("message", {})
@@ -351,7 +369,7 @@ def call_llm_text(
         endpoint = f"{url}/v1/chat/completions"
         payload = {"model": m, "messages": messages, "stream": False, "max_tokens": 600}
         try:
-            resp = requests.post(endpoint, json=payload, timeout=timeout)
+            resp = _req_post(endpoint, json=payload, timeout=timeout)
             resp.raise_for_status()
             choices = resp.json().get("choices", [])
             if choices:
@@ -368,23 +386,23 @@ def call_llm_text(
         payload = {"model": m, "messages": messages, "stream": False, "keep_alive": -1, "options": {"num_predict": 600}}
 
         try:
-            resp = requests.post(endpoint, json=payload, timeout=timeout)
-        resp.raise_for_status()
-        return (resp.json().get("message", {}).get("content") or "").strip()
-    except requests.exceptions.ConnectionError:
-        if ensure_ollama_running():
-            try:
-                resp = requests.post(endpoint, json=payload, timeout=timeout)
-                resp.raise_for_status()
-                return (resp.json().get("message", {}).get("content") or "").strip()
-            except Exception:
-                pass
-        raise RuntimeError(
-            f"Cannot connect to Ollama at {url}. "
-            "Make sure Ollama is installed and run: ollama serve"
-        )
-    except Exception as e:
-        raise RuntimeError(f"LLM text call failed: {e}")
+            resp = _req_post(endpoint, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            return (resp.json().get("message", {}).get("content") or "").strip()
+        except requests.exceptions.ConnectionError:
+            if ensure_ollama_running():
+                try:
+                    resp = _req_post(endpoint, json=payload, timeout=timeout)
+                    resp.raise_for_status()
+                    return (resp.json().get("message", {}).get("content") or "").strip()
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"Cannot connect to Ollama at {url}. "
+                "Make sure Ollama is installed and run: ollama serve"
+            )
+        except Exception as e:
+            raise RuntimeError(f"LLM text call failed: {e}")
 
 
 def _stream_openai(
@@ -412,7 +430,7 @@ def _stream_openai(
         payload["tool_choice"] = "auto"
 
     try:
-        with requests.post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
+        with _req_post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
             resp.raise_for_status()
             full_content = ""
             buf          = ""
@@ -539,7 +557,7 @@ def call_llm_stream(
         payload["tools"] = tools
 
     def _do_stream() -> Generator[dict, None, None]:
-        with requests.post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
+        with _req_post(endpoint, json=payload, timeout=timeout, stream=True) as resp:
             resp.raise_for_status()
             full_content = ""
             tool_calls:  list = []
