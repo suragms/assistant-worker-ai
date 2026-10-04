@@ -78,23 +78,25 @@ def _normalize(raw: str) -> str:
     return raw  
 
 def _launch_windows(app_name: str) -> bool:
+    safe_app = app_name.replace("&", "").replace(";", "").replace("|", "").replace(">", "").replace("<", "")
 
-    if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
+    if shutil.which(safe_app) or shutil.which(safe_app.split(".")[0]):
         try:
             subprocess.Popen(
-                app_name,
-                shell=True,
+                ["cmd.exe", "/c", "start", "", safe_app],
+                shell=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
             time.sleep(1.5)
             return True
         except Exception as e:
             print(f"[open_app] subprocess failed: {e}")
 
-    if ":" in app_name:
+    if ":" in safe_app:
         try:
-            subprocess.Popen(f"start {app_name}", shell=True)
+            subprocess.Popen(["cmd.exe", "/c", "start", "", safe_app], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
             time.sleep(1.0)
             return True
         except Exception:

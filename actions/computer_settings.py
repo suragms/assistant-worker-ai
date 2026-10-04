@@ -552,6 +552,8 @@ def dark_mode():
             winreg.SetValueEx(key, "AppsUseLightTheme", 0, winreg.REG_DWORD, 1 - current)
             winreg.SetValueEx(key, "SystemUsesLightTheme", 0, winreg.REG_DWORD, 1 - current)
             winreg.CloseKey(key)
+            import ctypes
+            ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "ImmersiveColorSet", 2, 5000, None)
         except Exception as e:
             print(f"[Settings] dark_mode registry failed: {e}")
     else:

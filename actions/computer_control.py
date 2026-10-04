@@ -20,6 +20,12 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 except ImportError:
     _PYAUTOGUI = False
 
