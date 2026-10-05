@@ -56,6 +56,8 @@ _verify*.txt
 crash.txt
 err.txt
 output.txt
+*-diagnostic.txt
+ui-diagnostic.txt
 
 # Offline AI & speech models
 models/

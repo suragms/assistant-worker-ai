@@ -52,6 +52,10 @@ except Exception:
     pass
 
 hiddenimports = [
+    "theme", "core.screen_context", "core.windows_context", "core.agent_actions",
+    "core.agent_runtime", "widgets.agent_controls", "widgets.conversation_log",
+    "pywinauto", "pywinauto.controls.uiawrapper", "pywinauto.controls.uia_controls",
+    "pywinauto.uia_element_info", "pythoncom",
     "win32com.client", "win32com.shell", "win32api", "win32con", "win32gui",
     "win32process", "pywintypes", "winerror", "comtypes", "comtypes.client",
     "comtypes.automation", "pycaw", "pycaw.pycaw", "sounddevice",

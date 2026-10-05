@@ -1,3 +1,17 @@
+import sys as _bootstrap_sys
+if "--smoke-test" in _bootstrap_sys.argv:
+    try:
+        from core.smoke import smoke_test
+        _smoke_exit = smoke_test()
+    except Exception:
+        import traceback as _smoke_traceback
+        from pathlib import Path as _SmokePath
+        if "--report" in _bootstrap_sys.argv:
+            _SmokePath(_bootstrap_sys.argv[_bootstrap_sys.argv.index("--report")+1]).write_text(
+                _smoke_traceback.format_exc(), encoding="utf-8")
+        _smoke_exit = 1
+    raise SystemExit(_smoke_exit)
+
 import platform as _platform
 import subprocess as _subprocess
 
@@ -868,6 +882,15 @@ class AssistantWorkerLive:
         return url, key, f"{url}/auto-login?key={key}", manual
 
     def _on_text_command(self, text: str):
+        if self._agent_control_command(text):
+            return
+        from core.agent_runtime import get_runtime
+        get_runtime().begin_request()
+        local_reply = get_runtime().local_text(text)
+        if local_reply:
+            self.ui.write_log(f"{self._asst_name}: {local_reply}")
+            self.ui.set_transcript(f"{self._asst_name}: {local_reply}")
+            return
         if not self._loop or not self.session or getattr(self, "_offline_active", False):
             # Process via safe offline fallback manager
             if hasattr(self, "_offline_mgr"):
@@ -892,6 +915,22 @@ class AssistantWorkerLive:
             ),
             self._loop
         )
+
+    def _agent_control_command(self, text):
+        from core.agent_runtime import get_runtime
+        runtime = get_runtime()
+        command = text.strip().lower().rstrip(".!?")
+        if command in ("stop", "stop it", "take over", "pause", "wait", "continue", "resume"):
+            command = {"stop it": "stop", "wait": "pause"}.get(command, command)
+            runtime.control(command)
+            if command in ("stop", "take over"):
+                self.interrupt()
+            return True
+        if command in ("stop looking at my screen", "pause vision", "stop sharing"):
+            runtime.set_scope("SCREEN OFF")
+            self._pending_vision = None
+            return True
+        return False
 
     def _tail_active(self) -> bool:
         """True while the speakers may still be finishing our last sentence."""
@@ -949,6 +988,7 @@ class AssistantWorkerLive:
         """Chord pressed or released — may arrive on the hotkey thread."""
         self._ptt_held = held
         if held:
+            self.ui._win._floating_sig.emit()
             # Holding the key is also a way to wake it, so push-to-talk works
             # without having to say the wake word first.
             if self._wake_enabled and not self._awake:
@@ -961,6 +1001,8 @@ class AssistantWorkerLive:
 
     def interrupt(self) -> None:
         """Stop Assistant Worker mid-speech: drain queued audio and open mic immediately."""
+        from core.agent_runtime import get_runtime
+        get_runtime().control("stop")
         self._interrupted = True
         q = self.audio_in_queue
         if q:
@@ -1173,7 +1215,7 @@ class AssistantWorkerLive:
         name = fc.name
         args = dict(fc.args or {})
 
-        print(f"[ASSISTANT] 🔧 {name}  {args}")
+        print(f"[ASSISTANT] Tool: {name}")
         self.ui.set_state("THINKING")
 
 
@@ -1231,7 +1273,11 @@ class AssistantWorkerLive:
                         print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
                         _stall = "camera"
                     else:
-                        img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                        from core.agent_runtime import get_runtime
+                        context = await loop.run_in_executor(None, lambda: get_runtime().screen.observe(force=True, screenshot=True))
+                        if not context.screenshot:
+                            raise PermissionError("Screen sharing is off or protected. Enable Current window in Screen settings.")
+                        img_b, mime_t = context.screenshot, "image/jpeg"
                         print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
                     self._pending_vision = (img_b, mime_t, user_text, angle)
@@ -1501,6 +1547,11 @@ class AssistantWorkerLive:
         import base64 as _b64
         img_b, mime_t, question, angle = self._pending_vision
         self._pending_vision = None
+        if angle != "camera":
+            from core.agent_runtime import get_runtime
+            if get_runtime().screen.scope.value == "SCREEN OFF":
+                self._vision_busy = False
+                return False
         b64 = _b64.b64encode(img_b).decode("ascii")
         print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session")
 
@@ -1584,7 +1635,11 @@ class AssistantWorkerLive:
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
+                                if not in_buf:
+                                    from core.agent_runtime import get_runtime
+                                    get_runtime().begin_request()
                                 in_buf.append(txt)
+                                self._agent_control_command(" ".join(in_buf))
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:

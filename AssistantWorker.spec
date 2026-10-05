@@ -84,6 +84,10 @@ except Exception:
 
 # ── Hidden imports ────────────────────────────────────────────────────────
 hiddenimports = [
+    "theme", "core.screen_context", "core.windows_context", "core.agent_actions",
+    "core.agent_runtime", "widgets.agent_controls", "widgets.conversation_log",
+    "pywinauto", "pywinauto.controls.uiawrapper", "pywinauto.controls.uia_controls",
+    "pywinauto.uia_element_info", "pythoncom",
     # Windows COM / shell
     "win32com.client",
     "win32com.shell",

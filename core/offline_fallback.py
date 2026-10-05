@@ -545,6 +545,19 @@ class OfflineFallbackManager:
         if not t:
             return "", "none"
 
+        from core.agent_runtime import get_runtime
+        runtime = get_runtime()
+        if t.rstrip(".!?") in ("stop", "stop it", "pause", "wait", "continue", "resume"):
+            command = {"stop it": "stop", "wait": "pause"}.get(t.rstrip(".!?"), t.rstrip(".!?"))
+            return runtime.control(command), "agent_control"
+        if t.rstrip(".!?") in ("stop looking at my screen", "pause vision", "stop sharing"):
+            runtime.set_scope("SCREEN OFF")
+            return "Screen observation stopped.", "screen_off"
+        runtime.begin_request()
+        local_reply = runtime.local_text(text)
+        if local_reply:
+            return local_reply, "open_downloads" if t == "open downloads" else "local_context"
+
         # ── 1. Irreversible System Commands (Guarded by Confirmation Gate) ───
         if any(k in t for k in ("shut down computer", "turn off the pc", "turn off computer", "power off pc")):
             can_run, reason = self._dedup.can_execute("shutdown", t, request_id)
@@ -738,7 +751,7 @@ class OfflineFallbackManager:
             can_run, reason = self._dedup.can_execute("reminder", t, request_id)
             if not can_run:
                 return reason, "throttled"
-            return "Offline reminder noted. Local reminder triggers will be dispatched.", "reminder"
+            return "Offline reminder scheduling is not available here; no reminder was created.", "reminder"
 
         # ── 8. Conversational Fallback when Offline ──────────────────────────
         if not self._online:

@@ -1,5 +1,5 @@
 """
-Modern Voice Orb Widget - ChatGPT-style polished voice visualization.
+Assistant Worker audio-reactive Voice Surface.
 
 Audio-reactive circular orb with:
 - Smooth state transitions
@@ -16,12 +16,13 @@ from __future__ import annotations
 import math
 import time
 
-from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, QEvent
 from PyQt6.QtGui import (
     QColor, QFont, QPainter, QPainterPath, QPen,
     QRadialGradient, QLinearGradient, QConicalGradient,
 )
 from PyQt6.QtWidgets import QWidget, QSizePolicy
+from theme import C
 
 
 # ── Color palette (matches C class defaults) ──────────────────────────────────
@@ -56,6 +57,9 @@ class VoiceOrbWidget(QWidget):
         # ── Visual state ────────────────────────────────────────────────
         self._state = "IDLE"
         self._muted = False
+        self._reduce_motion = False
+        self._last_tick = time.monotonic()
+        self.setAccessibleName("Assistant voice state")
 
         # ── Animation clocks ────────────────────────────────────────────
         self._t0 = time.monotonic()
@@ -71,7 +75,7 @@ class VoiceOrbWidget(QWidget):
         # ── 60 FPS timer ─────────────────────────────────────────────────
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(16)   # ~62.5 FPS
+        self._timer.setInterval(50)
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -83,11 +87,20 @@ class VoiceOrbWidget(QWidget):
 
     def set_state(self, state: str) -> None:
         """Update visual state. Called from Qt thread via signal."""
-        self._state = state.upper()
+        aliases = {"READY": "IDLE", "SLEEPING": "IDLE", "PROCESSING": "UNDERSTANDING", "CONNECTED": "IDLE"}
+        state = aliases.get(state.upper(), state.upper())
+        if state not in {"IDLE", "WAKE", "LISTENING", "UNDERSTANDING", "THINKING", "ACTING", "SPEAKING", "INTERRUPTED", "MUTED", "OFFLINE", "ERROR"}:
+            state = "IDLE"
+        self._state = state
+        self.setAccessibleDescription(state.capitalize())
+        self._sync_timer()
+        self.update()
 
     def set_muted(self, muted: bool) -> None:
         """Update muted state."""
         self._muted = bool(muted)
+        self._sync_timer()
+        self.update()
 
     def set_colors(self, primary: str, light: str = "", dark: str = "") -> None:
         """Update accent colors (hex strings)."""
@@ -115,16 +128,45 @@ class VoiceOrbWidget(QWidget):
 
     # ── Animation loop ───────────────────────────────────────────────────────
 
+    def set_reduce_motion(self, enabled):
+        self._reduce_motion = bool(enabled)
+        self._sync_timer()
+        self.update()
+
+    def _sync_timer(self):
+        if not self.isVisible() or self.window().isMinimized() or self._reduce_motion or self._muted or self._state in ("MUTED", "OFFLINE", "INTERRUPTED"):
+            self._timer.stop()
+        else:
+            self._timer.start(50 if self._state == "IDLE" else 16)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.window().installEventFilter(self)
+        self._last_tick = time.monotonic()
+        self._sync_timer()
+
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_timer()
+        return super().eventFilter(watched, event)
+
     def _tick(self):
-        dt = 0.016
-        self._phase  = (self._phase  + dt * 1.8) % (2 * math.pi)
-        self._phase2 = (self._phase2 + dt * 0.7) % (2 * math.pi)
-        self._rotate = (self._rotate + dt * 90)  % 360   # deg/s
-
-        # Smooth audio levels
-        self._audio_level    += (self._target_level   - self._audio_level)    * 0.18
-        self._displayed_level += (self._audio_level   - self._displayed_level) * 0.10
-
+        if self.window().isMinimized():
+            self._timer.stop()
+            return
+        now = time.monotonic()
+        dt = min(.1, now - self._last_tick)
+        self._last_tick = now
+        self._phase = (self._phase + dt * 1.8) % (2 * math.pi)
+        self._phase2 = (self._phase2 + dt * .7) % (2 * math.pi)
+        self._rotate = (self._rotate + dt * 65) % 360
+        tau = .035 if self._target_level > self._audio_level else .22
+        self._audio_level += (self._target_level-self._audio_level) * (1-math.exp(-dt/tau))
+        self._displayed_level = self._audio_level
         self.update()
 
     # ── Paint dispatch ───────────────────────────────────────────────────────
@@ -135,26 +177,34 @@ class VoiceOrbWidget(QWidget):
             if not p.isActive():
                 return
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            p.fillRect(self.rect(), _BG)
+            p.fillRect(self.rect(), QColor(C.PANEL))
 
             cx, cy   = self.width() / 2, self.height() / 2
             base_r   = min(self.width(), self.height()) * 0.22
             if base_r <= 1.0:
                 return
 
-            if self._muted:
+            if self._muted or self._state == "MUTED":
                 self._draw_muted(p, cx, cy, base_r)
             else:
                 state = self._state
-                if state == "SLEEPING":
+                if state in ("OFFLINE", "INTERRUPTED"):
                     self._draw_sleeping(p, cx, cy, base_r)
-                elif state == "THINKING":
+                elif state in ("THINKING", "ACTING"):
+                    if state == "ACTING":
+                        cx += math.sin(self._phase) * base_r * .15
                     self._draw_thinking(p, cx, cy, base_r)
                 elif state in ("SPEAKING",):
                     self._draw_speaking(p, cx, cy, base_r)
                 elif state == "LISTENING":
                     self._draw_listening(p, cx, cy, base_r)
-                else:   # IDLE, CONNECTED, any unknown
+                elif state == "UNDERSTANDING":
+                    self._draw_idle(p, cx, cy, base_r * (.88 + .04 * math.cos(self._phase)))
+                elif state == "WAKE":
+                    self._draw_idle(p, cx, cy, base_r * 1.12)
+                elif state == "ERROR":
+                    self._draw_orb(p, cx, cy, base_r, QColor(C.RED), QColor(C.ACC), glow_alpha=35, glow_mult=1.5)
+                else:
                     self._draw_idle(p, cx, cy, base_r)
         finally:
             p.end()
@@ -170,7 +220,7 @@ class VoiceOrbWidget(QWidget):
     def _draw_listening(self, p: QPainter, cx, cy, base_r):
         """Orb responds gently to mic level."""
         lvl = max(0.0, min(1.0, float(self._displayed_level or 0.0)))
-        breathe = 1.0 + math.sin(self._phase2) * 0.04
+        breathe = 1.0
         audio_scale = 1.0 + lvl * 0.25
         r = max(1.0, base_r * breathe * audio_scale)
         glow_alpha = int(max(0, min(255, 40 + lvl * 60)))
@@ -182,7 +232,7 @@ class VoiceOrbWidget(QWidget):
     def _draw_speaking(self, p: QPainter, cx, cy, base_r):
         """Orb pulses strongly with assistant audio output."""
         lvl = max(0.0, min(1.0, float(self._displayed_level or 0.0)))
-        breathe = 1.0 + math.sin(self._phase) * 0.04
+        breathe = 1.0
         audio_scale = 1.0 + lvl * 0.45
         r = max(1.0, base_r * breathe * audio_scale)
         glow_alpha = int(max(0, min(255, 60 + lvl * 80)))
@@ -233,7 +283,7 @@ class VoiceOrbWidget(QWidget):
 
     def _draw_muted(self, p: QPainter, cx, cy, base_r):
         """Red-tinted orb with mute slash."""
-        breathe = 1.0 + math.sin(self._phase2) * 0.04
+        breathe = 1.0
         r = max(1.0, base_r * 0.88 * breathe)
         self._draw_orb(p, cx, cy, r, _RED, _RED_L, glow_alpha=40, glow_mult=2.0)
         # Mute slash
@@ -312,3 +362,6 @@ class VoiceOrbWidget(QWidget):
             p.setBrush(col); p.setPen(Qt.PenStyle.NoPen)
             p.drawEllipse(QPointF(bx, by), blobr, blobr)
 
+
+
+VoiceSurface = VoiceOrbWidget
