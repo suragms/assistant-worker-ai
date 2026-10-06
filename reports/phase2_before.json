@@ -1,0 +1,132 @@
+{
+  "timestamp": "2026-10-06 13:10:32",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "python_version": "3.14.4",
+  "system_ram": {
+    "total_mb": 15952.55,
+    "available_mb": 2166.55
+  },
+  "states": {
+    "A_completely_idle": {
+      "process_ram_mb": 157.51,
+      "private_working_set_mb": 303.7,
+      "cpu_avg_percent": 0.0,
+      "cpu_peak_percent": 0.0,
+      "thread_count": 22,
+      "handle_count": 1163,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "B_window_visible_idle": {
+      "process_ram_mb": 157.74,
+      "private_working_set_mb": 303.7,
+      "cpu_avg_percent": 0.0,
+      "cpu_peak_percent": 0.0,
+      "thread_count": 22,
+      "handle_count": 1163,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "C_minimized": {
+      "process_ram_mb": 157.76,
+      "private_working_set_mb": 303.57,
+      "cpu_avg_percent": 0.0,
+      "cpu_peak_percent": 0.0,
+      "thread_count": 22,
+      "handle_count": 1163,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "D_system_tray": {
+      "process_ram_mb": 157.76,
+      "private_working_set_mb": 303.57,
+      "cpu_avg_percent": 0.0,
+      "cpu_peak_percent": 0.0,
+      "thread_count": 22,
+      "handle_count": 1163,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "E_microphone_listening": {
+      "process_ram_mb": 157.82,
+      "private_working_set_mb": 303.57,
+      "cpu_avg_percent": 1.56,
+      "cpu_peak_percent": 7.8,
+      "thread_count": 22,
+      "handle_count": 1163,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "F_assistant_speaking": {
+      "process_ram_mb": 157.95,
+      "private_working_set_mb": 303.7,
+      "cpu_avg_percent": 0.0,
+      "cpu_peak_percent": 0.0,
+      "thread_count": 22,
+      "handle_count": 1165,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "G_gemini_live_connected": {
+      "process_ram_mb": 160.84,
+      "private_working_set_mb": 306.42,
+      "cpu_avg_percent": 0.78,
+      "cpu_peak_percent": 7.8,
+      "thread_count": 22,
+      "handle_count": 1167,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "H_screen_capture": {
+      "process_ram_mb": 180.24,
+      "private_working_set_mb": 316.52,
+      "cpu_avg_percent": 0.0,
+      "cpu_peak_percent": 0.0,
+      "thread_count": 22,
+      "handle_count": 1167,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "I_screen_analysis": {
+      "process_ram_mb": 189.61,
+      "private_working_set_mb": 324.18,
+      "cpu_avg_percent": 0.0,
+      "cpu_peak_percent": 0.0,
+      "thread_count": 22,
+      "handle_count": 1266,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "J_browser_automation": {
+      "process_ram_mb": 194.3,
+      "private_working_set_mb": 328.75,
+      "cpu_avg_percent": 0.78,
+      "cpu_peak_percent": 7.8,
+      "thread_count": 22,
+      "handle_count": 1266,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    },
+    "K_offline_stt_active": {
+      "process_ram_mb": 195.81,
+      "private_working_set_mb": 330.24,
+      "cpu_avg_percent": 0.78,
+      "cpu_peak_percent": 7.8,
+      "thread_count": 22,
+      "handle_count": 1266,
+      "child_process_count": 0,
+      "gpu_usage_percent": -1.0,
+      "sample_duration_sec": 2.0
+    }
+  }
+}
