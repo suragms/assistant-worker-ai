@@ -9,6 +9,7 @@ import json
 import re
 import threading
 import time
+import uuid
 
 
 class ScreenScope(str, Enum):
@@ -30,6 +31,15 @@ class Element:
     selected: bool = False
     enabled: bool = True
     password: bool = False
+    control_type: str = ""
+    value: str = ""
+    class_name: str = ""
+    help_text: str = ""
+    children_count: int = 0
+
+    def __post_init__(self):
+        if not self.control_type and self.role:
+            object.__setattr__(self, "control_type", self.role)
 
 
 @dataclass
@@ -49,6 +59,8 @@ class ScreenContext:
     privacy_flags: list[str] = field(default_factory=list)
     scope: str = ScreenScope.OFF.value
     truncated: bool = False
+    context_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    change_score: float = 0.0
 
     @property
     def focused_element(self):
@@ -68,7 +80,8 @@ class ScreenContext:
                 "screen_size": self.screen_size, "dpi": self.dpi,
                 "cursor_position": self.cursor_position, "scope": self.scope,
                 "ui_tree": [asdict(e) for e in self.visible_elements],
-                "privacy_flags": self.privacy_flags, "truncated": self.truncated}
+                "privacy_flags": self.privacy_flags, "truncated": self.truncated,
+                "context_id": self.context_id, "change_score": self.change_score}
 
 
 @dataclass

@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-10-06 15:27:42",
+  "platform": "win32",
+  "iterations": 50,
+  "screen_context_assembly": {
+    "count": 50,
+    "mean_ms": 17.17,
+    "median_ms": 2.86,
+    "min_ms": 1.94,
+    "max_ms": 712.56,
+    "p95_ms": 4.87,
+    "p99_ms": 5.83
+  },
+  "screen_change_detection": {
+    "count": 50,
+    "mean_ms": 0.93,
+    "median_ms": 0.27,
+    "min_ms": 0.19,
+    "max_ms": 32.52,
+    "p95_ms": 0.44,
+    "p99_ms": 0.46
+  },
+  "async_screen_observer": {
+    "count": 50,
+    "mean_ms": 5.88,
+    "median_ms": 5.78,
+    "min_ms": 4.26,
+    "max_ms": 12.24,
+    "p95_ms": 7.24,
+    "p99_ms": 8.72
+  }
+}
