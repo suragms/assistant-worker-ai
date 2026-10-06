@@ -149,6 +149,28 @@ uses the existing browser session owner. `theme.py` centralizes the compatibilit
 palette and semantic tokens. Extracted builders/widgets live under `widgets/`;
 `ui.py` remains the compatibility facade during gradual migration.
 
+## Runtime performance policy
+
+The runtime combines the selected **ECO**, **BALANCED**, or **PERFORMANCE** mode
+with available-RAM pressure. The governor uses hysteresis to avoid toggling
+policy while memory hovers around a threshold. The resulting policy controls
+voice-orb idle/active FPS, monitor cadence, screen-capture dimensions, and
+whether optional model/browser prewarming is allowed.
+
+The voice animation timer stops when its window is hidden or minimized, when
+muted, and when reduced motion is enabled. Gemini's SDK is lazy-loaded on the
+first cloud request rather than during initial application import. Live-session
+connection triggers are single-flight, so voice, hotkey, UI, and reconnect paths
+share one connection attempt.
+
+Capture frames are resolution-capped by the current policy. Screen-change
+detection keeps only a 160×90 grayscale thumbnail between comparisons rather
+than retaining full-resolution screen images.
+
+See the reproducible [Phase 2 benchmark summary](reports/phase2_summary.md),
+[stability exercise](scripts/stress_phase2.py), and
+[after-measurement script](scripts/measure_phase2_after.py).
+
 ## Tests and build
 
 ```powershell

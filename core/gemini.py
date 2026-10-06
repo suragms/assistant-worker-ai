@@ -64,6 +64,8 @@ THE LADDER, MEASURED
 """
 from __future__ import annotations
 
+from core.genai_provider import get_genai, get_genai_types
+
 import asyncio
 import json
 import sys
@@ -312,8 +314,8 @@ def api_key(refresh: bool = False) -> str:
 def client(timeout_ms: int = DEFAULT_TIMEOUT_MS, key: str = ""):
     """A configured genai.Client with a deadline on it. Raises if there is no
     key, because a caller that cannot work without one should say so."""
-    from google import genai
-    from google.genai import types as gtypes
+    genai = get_genai()
+    gtypes = get_genai_types()
 
     key = key or api_key()
     if not key:
@@ -369,8 +371,8 @@ def _to_live_parts(contents) -> list:
 
 
 async def _live_turn(parts: list, system: str, key: str, timeout_s: float) -> str:
-    from google import genai
-    from google.genai import types as gtypes
+    genai = get_genai()
+    gtypes = get_genai_types()
 
     cl = genai.Client(api_key=key, http_options=gtypes.HttpOptions(api_version="v1beta", timeout=int(timeout_s)*1000))
     # Silence the persona, or it answers instead of complying.

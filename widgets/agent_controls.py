@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLa
                              QDialog, QComboBox, QLineEdit, QFormLayout, QCheckBox, QApplication, QTextEdit)
 from core.agent_runtime import get_runtime
 from core.screen_context import ScreenScope
-from widgets.voice_orb import VoiceSurface
+from widgets.voice_orb import VoiceOrbWidget as VoiceSurface
 from theme import C, set_theme
 from widgets.action_overlay import ActionOverlay
 

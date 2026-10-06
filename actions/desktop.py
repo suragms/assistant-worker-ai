@@ -103,7 +103,7 @@ def _execute_generated_code(code: str, player=None) -> str:
 
 def _ask_gemini_for_desktop_action(task: str) -> str:
 
-    from google import genai as _genai
+    _genai = get_genai()
 
     desktop = str(_get_desktop())
 

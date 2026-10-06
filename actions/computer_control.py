@@ -1,4 +1,5 @@
 #computer_control.py
+from core.genai_provider import get_genai, get_genai_types
 import io
 import json
 import platform
@@ -325,8 +326,8 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         return None
 
     try:
-        from google import genai
-        from google.genai import types as gtypes
+        genai = get_genai()
+        gtypes = get_genai_types()
 
         _require_pyautogui()
         w, h  = pyautogui.size()

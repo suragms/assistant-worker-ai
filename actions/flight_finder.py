@@ -1,4 +1,5 @@
 #flight_finder.py
+from core.genai_provider import get_genai, get_genai_types
 import json
 import re
 import subprocess
@@ -148,8 +149,8 @@ def _parse_flights_with_gemini(
     destination: str,
     date:        str,
 ) -> list[dict]:
-    from google import genai as _genai
-    from google.genai import types
+    _genai = get_genai()
+    types = get_genai_types()
 
     prompt  = (
         f"Extract flight options from {origin} to {destination} on {date} "

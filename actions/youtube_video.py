@@ -1,4 +1,5 @@
 #youtube_video.py
+from core.genai_provider import get_genai, get_genai_types
 import json
 import re
 import sys
@@ -167,7 +168,7 @@ def _get_transcript(video_id: str) -> str | None:
 
 
 def _summarize_with_gemini(transcript: str, video_url: str) -> str:
-    from google.genai import types
+    types = get_genai_types()
     from core import gemini
 
     max_chars = 80000

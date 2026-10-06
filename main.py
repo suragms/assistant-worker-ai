@@ -73,8 +73,7 @@ from pathlib import Path
 
 import sounddevice as sd
 import numpy as np
-from google import genai
-from google.genai import types
+from core.genai_provider import get_genai, get_genai_types
 from ui import AssistantWorkerUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
@@ -1062,7 +1061,7 @@ class AssistantWorkerLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_config(self) -> Any:
         from datetime import datetime
 
         # Load customization from config
@@ -1143,17 +1142,17 @@ class AssistantWorkerLive:
             # Hand back the handle captured from the last session_resumption
             # update. `handle=None` is exactly the old behaviour (ask for
             # handles, start fresh), so the first connect of a run is unchanged.
-            session_resumption=types.SessionResumptionConfig(
+            session_resumption=get_genai_types().SessionResumptionConfig(
                 handle=self._resume_handle
             ),
             # Sliding-window compression: session never dies from a full context
             # window — Assistant Worker can stay in one conversation for hours
-            context_window_compression=types.ContextWindowCompressionConfig(
-                sliding_window=types.SlidingWindow(),
+            context_window_compression=get_genai_types().ContextWindowCompressionConfig(
+                sliding_window=get_genai_types().SlidingWindow(),
             ),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+            speech_config=get_genai_types().SpeechConfig(
+                voice_config=get_genai_types().VoiceConfig(
+                    prebuilt_voice_config=get_genai_types().PrebuiltVoiceConfig(
                         voice_name=get_voice()
                     )
                 )
@@ -1167,12 +1166,12 @@ class AssistantWorkerLive:
             #  To restore it on a 2.5 native-audio model, add back:
             #  cfg["enable_affective_dialog"] = True )
             if get_proactive_audio_enabled():
-                cfg["proactivity"] = types.ProactivityConfig(proactive_audio=True)
+                cfg["proactivity"] = get_genai_types().ProactivityConfig(proactive_audio=True)
 
         if self._tuned_live:
             cfg.update(self._tuning_config())
 
-        return types.LiveConnectConfig(**cfg)
+        return get_genai_types().LiveConnectConfig(**cfg)
 
     def _tuning_config(self) -> dict:
         """The optional knobs, kept apart so one bad field can be dropped wholesale.
@@ -1190,19 +1189,19 @@ class AssistantWorkerLive:
         # it is necessarily cautious.
         turn = get_turn_tuning()
         if turn.get("enabled", True):
-            detect = types.AutomaticActivityDetection(
+            detect = get_genai_types().AutomaticActivityDetection(
                 silence_duration_ms=turn["silence_ms"],
                 prefix_padding_ms=turn["prefix_ms"],
             )
             if turn["end_sensitivity"] == "high":
-                detect.end_of_speech_sensitivity = types.EndSensitivity.END_SENSITIVITY_HIGH
+                detect.end_of_speech_sensitivity = get_genai_types().EndSensitivity.END_SENSITIVITY_HIGH
             elif turn["end_sensitivity"] == "low":
-                detect.end_of_speech_sensitivity = types.EndSensitivity.END_SENSITIVITY_LOW
+                detect.end_of_speech_sensitivity = get_genai_types().EndSensitivity.END_SENSITIVITY_LOW
             if turn["start_sensitivity"] == "high":
-                detect.start_of_speech_sensitivity = types.StartSensitivity.START_SENSITIVITY_HIGH
+                detect.start_of_speech_sensitivity = get_genai_types().StartSensitivity.START_SENSITIVITY_HIGH
             elif turn["start_sensitivity"] == "low":
-                detect.start_of_speech_sensitivity = types.StartSensitivity.START_SENSITIVITY_LOW
-            out["realtime_input_config"] = types.RealtimeInputConfig(
+                detect.start_of_speech_sensitivity = get_genai_types().StartSensitivity.START_SENSITIVITY_LOW
+            out["realtime_input_config"] = get_genai_types().RealtimeInputConfig(
                 automatic_activity_detection=detect)
 
         # Screenshots and camera frames are tokenised at this resolution and then
@@ -1211,9 +1210,9 @@ class AssistantWorkerLive:
         res = get_media_resolution()
         if res != "default":
             out["media_resolution"] = {
-                "low":    types.MediaResolution.MEDIA_RESOLUTION_LOW,
-                "medium": types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
-                "high":   types.MediaResolution.MEDIA_RESOLUTION_HIGH,
+                "low":    get_genai_types().MediaResolution.MEDIA_RESOLUTION_LOW,
+                "medium": get_genai_types().MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+                "high":   get_genai_types().MediaResolution.MEDIA_RESOLUTION_HIGH,
             }[res]
 
         # Thinking is left at the server default deliberately. Forcing the budget
@@ -1223,11 +1222,11 @@ class AssistantWorkerLive:
         # way for a future release to behave differently. Set "thinking_enabled"
         # in config/api_keys.json to true to let it reason instead.
         if get_thinking_enabled():
-            out["thinking_config"] = types.ThinkingConfig(thinking_budget=-1)
+            out["thinking_config"] = get_genai_types().ThinkingConfig(thinking_budget=-1)
 
         return out
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
+    async def _execute_tool(self, fc) -> Any:
         name = fc.name
         args = dict(fc.args or {})
 
@@ -1244,7 +1243,7 @@ class AssistantWorkerLive:
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
-            return types.FunctionResponse(
+            return get_genai_types().FunctionResponse(
                 id=fc.id, name=name,
                 response={"result": "ok", "silent": True}
             )
@@ -1395,7 +1394,7 @@ class AssistantWorkerLive:
         _sched = (self._action_registry.scheduling(name)
                   or self._plugin_registry.scheduling(name))
         _extra = {"scheduling": _sched} if _sched else {}
-        return types.FunctionResponse(
+        return get_genai_types().FunctionResponse(
             id=fc.id, name=name,
             response={"result": result},
             **_extra
@@ -1410,7 +1409,7 @@ class AssistantWorkerLive:
             # are {"data": <bytes>, "mime_type": <str>} from _listen_audio and
             # the phone relay.
             await self.session.send_realtime_input(
-                audio=types.Blob(
+                audio=get_genai_types().Blob(
                     data=msg["data"],
                     mime_type=msg.get("mime_type", "audio/pcm"),
                 )
@@ -2326,7 +2325,7 @@ class AssistantWorkerLive:
                 # Fresh client on every reconnect — avoids stale HTTP session state
                 # v1alpha carries proactive audio; if it gets rejected we fall
                 # back to v1beta.
-                client = genai.Client(
+                client = get_genai().Client(
                     api_key=_get_api_key(),
                     http_options={"api_version": "v1alpha" if self._enhanced_live else "v1beta"}
                 )

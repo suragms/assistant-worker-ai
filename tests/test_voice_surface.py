@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QApplication
-from widgets.voice_orb import VoiceSurface
+from widgets.voice_orb import VoiceOrbWidget as VoiceSurface
 
 
 def test_voice_states_visibility_and_reduce_motion():
