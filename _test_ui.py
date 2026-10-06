@@ -60,7 +60,6 @@ def test_subsystems():
     print("  Content, review, and quiz panels verified.")
 
     print("\nALL SMOKE TESTS PASSED!")
-    return True
 
 if __name__ == "__main__":
     test_subsystems()

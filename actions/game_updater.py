@@ -810,8 +810,9 @@ def _schedule_daily_update(hour: int = 3, minute: int = 0) -> str:
 
 
 def _schedule_windows(hour: int, minute: int) -> str:
-    task_name   = "JARVIS_GameUpdater"
+    task_name   = "AssistantWorker_GameUpdater"
     script_path = Path(__file__).resolve()
+    subprocess.run(["schtasks", "/Delete", "/TN", "JARVIS_GameUpdater", "/F"], capture_output=True, **_CNW)
     subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True, **_CNW)
     for extra in (["/RL", "HIGHEST", "/RU", "SYSTEM"], []):
         cmd    = ["schtasks", "/Create", "/TN", task_name,
@@ -879,24 +880,31 @@ def _schedule_linux(hour: int, minute: int) -> str:
 
 def _cancel_scheduled_update() -> str:
     if is_windows():
-        result = subprocess.run(
+        subprocess.run(
             ["schtasks", "/Delete", "/TN", "JARVIS_GameUpdater", "/F"],
+            capture_output=True, text=True, **_CNW
+        )
+        result = subprocess.run(
+            ["schtasks", "/Delete", "/TN", "AssistantWorker_GameUpdater", "/F"],
             capture_output=True, text=True, **_CNW
         )
         return ("Scheduled update cancelled."
                 if result.returncode == 0 else "No scheduled update found.")
     if is_mac():
-        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.gameupdater.plist"
-        if plist_path.exists():
-            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
-            plist_path.unlink()
-            return "Scheduled update cancelled."
-        return "No scheduled update found."
+        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.assistantworker.gameupdater.plist"
+        legacy_plist = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.gameupdater.plist"
+        cancelled = False
+        for p in (plist_path, legacy_plist):
+            if p.exists():
+                subprocess.run(["launchctl", "unload", str(p)], capture_output=True)
+                p.unlink()
+                cancelled = True
+        return "Scheduled update cancelled." if cancelled else "No scheduled update found."
 
     try:
         existing = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
         lines    = [l for l in existing.stdout.splitlines()
-                    if "JARVIS_GameUpdater" not in l]
+                    if "AssistantWorker_GameUpdater" not in l and "JARVIS_GameUpdater" not in l]
         subprocess.run(["crontab", "-"],
                        input="\n".join(lines) + "\n", text=True)
         return "Scheduled update cancelled."
@@ -907,9 +915,14 @@ def _cancel_scheduled_update() -> str:
 def _get_schedule_status() -> str:
     if is_windows():
         result = subprocess.run(
-            ["schtasks", "/Query", "/TN", "JARVIS_GameUpdater", "/FO", "LIST"],
+            ["schtasks", "/Query", "/TN", "AssistantWorker_GameUpdater", "/FO", "LIST"],
             capture_output=True, text=True, **_CNW
         )
+        if result.returncode != 0:
+            result = subprocess.run(
+                ["schtasks", "/Query", "/TN", "JARVIS_GameUpdater", "/FO", "LIST"],
+                capture_output=True, text=True, **_CNW
+            )
         if result.returncode != 0:
             return "No scheduled game update found."
         for line in result.stdout.strip().splitlines():
@@ -918,16 +931,16 @@ def _get_schedule_status() -> str:
                 return f"Game update scheduled. {line.strip()}"
         return "Game update is scheduled."
     if is_mac():
-        plist_path = (Path.home() / "Library" / "LaunchAgents"
-                      / "com.jarvis.gameupdater.plist")
+        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.assistantworker.gameupdater.plist"
+        legacy_plist = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.gameupdater.plist"
         return ("Game update is scheduled via launchd."
-                if plist_path.exists() else "No scheduled game update found.")
+                if (plist_path.exists() or legacy_plist.exists()) else "No scheduled game update found.")
 
     try:
         result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-        if "JARVIS_GameUpdater" in result.stdout:
+        if "AssistantWorker_GameUpdater" in result.stdout or "JARVIS_GameUpdater" in result.stdout:
             for line in result.stdout.splitlines():
-                if "JARVIS_GameUpdater" in line:
+                if "AssistantWorker_GameUpdater" in line or "JARVIS_GameUpdater" in line:
                     return f"Game update is scheduled: {line.split('#')[0].strip()}"
         return "No scheduled game update found."
     except Exception:

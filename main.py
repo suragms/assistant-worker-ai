@@ -15,16 +15,19 @@ if "--smoke-test" in _bootstrap_sys.argv:
 import platform as _platform
 import subprocess as _subprocess
 
-# ── Nuclear: force CREATE_NO_WINDOW on EVERY subprocess call on Windows ───────
-# This patches Popen itself, so no per-file flag is needed anywhere.
+# ── Safe Windows subprocess patch: force CREATE_NO_WINDOW without destroying startupinfo ──
 if _platform.system() == "Windows":
     _OrigPopen = _subprocess.Popen
 
     class _Popen(_OrigPopen):
         def __init__(self, args, **kw):
             kw["creationflags"] = kw.get("creationflags", 0) | _subprocess.CREATE_NO_WINDOW
-            kw.pop("startupinfo", None)   # drop any stale/shared STARTUPINFO
-            super().__init__(args, **                       kw)
+            # Preserve caller's startupinfo if provided; never discard explicit handles/flags
+            si = kw.get("startupinfo")
+            if si is not None and hasattr(si, "dwFlags"):
+                si.dwFlags |= _subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = _subprocess.SW_HIDE
+            super().__init__(args, **kw)
 
     _subprocess.Popen = _Popen
 
@@ -189,6 +192,25 @@ _CURSOR_SLACK = 0.15
 # this is uncertain it is biased to lead.
 
 
+_VIS_CACHE: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+
+
+def _get_viseme_cache(win_size: int, sr: int):
+    key = (win_size, sr)
+    cached = _VIS_CACHE.get(key)
+    if cached is None:
+        win = np.hanning(win_size).astype(np.float32)
+        freqs = np.fft.rfftfreq(win_size, 1.0 / sr)
+        b_f1_lo = (freqs >= 150) & (freqs < 450)
+        b_f1_hi = (freqs >= 450) & (freqs < 1100)
+        b_f2_bk = (freqs >= 600) & (freqs < 1300)
+        b_f2_fr = (freqs >= 1700) & (freqs < 3200)
+        b_hiss = (freqs >= 3800) & (freqs < 8000)
+        cached = (win, b_f1_lo, b_f1_hi, b_f2_bk, b_f2_fr, b_hiss)
+        _VIS_CACHE[key] = cached
+    return cached
+
+
 def _pcm_visemes(samples, sr: int = 24000):
     """Slice a PCM block into (level, openness, width) frames, one per 20 ms.
 
@@ -199,13 +221,7 @@ def _pcm_visemes(samples, sr: int = 24000):
         x = np.asarray(samples, dtype=np.float32)
         if x.size < _VIS_WIN:
             return []
-        win = np.hanning(_VIS_WIN).astype(np.float32)
-        freqs = np.fft.rfftfreq(_VIS_WIN, 1.0 / sr)
-        b_f1_lo = (freqs >= 150) & (freqs < 450)     # F1 of close vowels
-        b_f1_hi = (freqs >= 450) & (freqs < 1100)    # F1 of open vowels
-        b_f2_bk = (freqs >= 600) & (freqs < 1300)    # F2 of rounded vowels
-        b_f2_fr = (freqs >= 1700) & (freqs < 3200)   # F2 of spread vowels
-        b_hiss = (freqs >= 3800) & (freqs < 8000)    # fricatives
+        win, b_f1_lo, b_f1_hi, b_f2_bk, b_f2_fr, b_hiss = _get_viseme_cache(_VIS_WIN, sr)
 
         # One frame per hop across the *whole* block. Stepping only while a full
         # window fits stopped 1024 - 480 samples short of the end, so a 200 ms
@@ -326,7 +342,7 @@ def _load_system_prompt() -> str:
         return PROMPT_PATH.read_text(encoding="utf-8")
     except Exception:
         return (
-            "You are Jarvis, Surag's personal AI assistant. "
+            "You are Assistant Worker, Surag's personal AI assistant. "
             "Be concise, direct, and always use the provided tools to complete tasks. "
             "Never simulate or guess results — always call the appropriate tool."
         )

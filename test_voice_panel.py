@@ -209,7 +209,6 @@ def test_ui_and_voice_panel():
     print("  -> Cloud / Offline mode badge verified.")
 
     print("\nALL VOICE UX & HARDWARE TESTS PASSED SUCCESSFULLY!")
-    return True
 
 
 def test_offline_fallback():
@@ -250,7 +249,6 @@ def test_offline_fallback():
     print("  -> Offline SpeechRecognizerBackend initialized safely.")
 
     print("  -> Offline Fallback Engine & Local Intents verified successfully.")
-    return True
 
 
 if __name__ == "__main__":

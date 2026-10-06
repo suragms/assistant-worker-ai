@@ -70,16 +70,23 @@ def _nvml_gpu() -> float:
 
 
 def _get_gpu_usage() -> float:
-    # pynvml — subprocess-free, works everywhere if installed
+    # Pure ctypes NVML query — zero subprocess, no deprecation warning
+    val = _nvml_gpu()
+    if val >= 0:
+        return val
+
     try:
-        import pynvml  # type: ignore
-        pynvml.nvmlInit()
-        h = pynvml.nvmlDeviceGetHandleByIndex(0)
-        return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=FutureWarning)
+            import pynvml  # type: ignore
+            pynvml.nvmlInit()
+            h = pynvml.nvmlDeviceGetHandleByIndex(0)
+            return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
     except Exception:
         pass
 
-    return _nvml_gpu()
+    return -1.0
 
 
 def _get_cpu_temp() -> float:

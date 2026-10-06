@@ -50,6 +50,8 @@ MAX_UPLOAD_MB = 500
 def _make_uploads_dir() -> Path:
     """Return (and create) the cross-platform uploads folder."""
     for candidate in [
+        Path.home() / "Downloads" / "Assistant Worker Uploads",
+        Path.home() / "Documents" / "Assistant Worker Uploads",
         Path.home() / "Downloads" / "JARVIS Uploads",
         Path.home() / "Documents" / "JARVIS Uploads",
         BASE_DIR / "uploads",
@@ -366,22 +368,20 @@ def _local_ip() -> str:
     return "127.0.0.1"
 
 
-def _ensure_certs() -> bool:
-    """
-    Make sure config/certs holds a TLS key pair, generating a self-signed one the
-    first time the dashboard runs.
-
-    The pair is deliberately NOT shipped in the repository. A private key that
-    every user downloads is the same as having no private key at all: anyone can
-    present a certificate that matches it. Generating locally gives each install
-    its own key, costs about a second, and happens exactly once.
-
-    Returns True when a usable pair exists afterwards; False leaves the caller on
-    plain HTTP, which still works — the QR code simply encodes http:// instead.
-    """
+def _get_cert_paths() -> tuple[Path, Path]:
     certs = BASE_DIR / "config" / "certs"
-    key_p = certs / "jarvis.key"
-    crt_p = certs / "jarvis.crt"
+    aw_key, aw_crt = certs / "assistantworker.key", certs / "assistantworker.crt"
+    j_key, j_crt = certs / "jarvis.key", certs / "jarvis.crt"
+    if aw_key.exists() and aw_crt.exists():
+        return aw_key, aw_crt
+    if j_key.exists() and j_crt.exists():
+        return j_key, j_crt
+    return aw_key, aw_crt
+
+
+def _ensure_certs() -> bool:
+    certs = BASE_DIR / "config" / "certs"
+    key_p, crt_p = _get_cert_paths()
     if key_p.exists() and crt_p.exists():
         return True
 
@@ -402,8 +402,8 @@ def _ensure_certs() -> bool:
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
         who = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "JARVIS Dashboard"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "JARVIS"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "Assistant Worker Dashboard"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Assistant Worker"),
         ])
 
         # The SAN has to cover every address the phone might use: the LAN IP the
@@ -490,8 +490,8 @@ class DashboardServer:
 
     @staticmethod
     def _ssl_enabled() -> bool:
-        certs = BASE_DIR / "config" / "certs"
-        return (certs / "jarvis.key").exists() and (certs / "jarvis.crt").exists()
+        key_p, crt_p = _get_cert_paths()
+        return key_p.exists() and crt_p.exists()
 
     def get_url(self) -> str:
         proto = "https" if self._ssl_enabled() else "http"
@@ -849,8 +849,7 @@ class DashboardServer:
         """Second HTTPS server on PORT+1 sharing the same app and in-memory state.
         Chrome HTTPS-upgrades any bare IP:PORT the user types, so this port also needs TLS.
         User types IP:8001 → Chrome tries https → self-signed cert warning → accept once → done."""
-        ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
-        ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
+        ssl_key, ssl_cert = _get_cert_paths()
         loop = asyncio.get_running_loop() if hasattr(asyncio, "get_running_loop") else asyncio.get_event_loop()
         loop.run_in_executor(None, _ensure_network_access, PORT + 1)
         cfg = uvicorn.Config(
@@ -876,9 +875,8 @@ class DashboardServer:
         # Generate the TLS pair on first run so no private key ships in the repo.
         _ensure_certs()
 
-        use_ssl  = self._ssl_enabled()
-        ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
-        ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
+        use_ssl = self._ssl_enabled()
+        ssl_key, ssl_cert = _get_cert_paths()
 
         if use_ssl:
             asyncio.create_task(self._serve_alias())

@@ -130,11 +130,14 @@ def _nvml_gpu_windows() -> float:
                     continue
 
         if _nvml_lib is None:
-            import pynvml  # type: ignore
-            pynvml.nvmlInit()
-            h = pynvml.nvmlDeviceGetHandleByIndex(0)
-            _nvml_ok = True
-            return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=FutureWarning)
+                import pynvml  # type: ignore
+                pynvml.nvmlInit()
+                h = pynvml.nvmlDeviceGetHandleByIndex(0)
+                _nvml_ok = True
+                return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
 
         dev = ctypes.c_void_p()
         _nvml_lib.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(dev))
@@ -214,24 +217,27 @@ class _SysMetrics:
             self.tmp = tmp
 
     def _get_gpu(self) -> float:
-        # pynvml — subprocess-free; initialise once and reuse the handle.
-        # Re-initialising NVML on every poll is slow, so cache it and stop
-        # retrying pynvml entirely once it proves unavailable here.
+        # Windows: nvml.dll via ctypes — zero subprocess, zero deprecation warning
+        if _OS == "Windows":
+            val = _nvml_gpu_windows()
+            if val >= 0:
+                return val
+
+        # pynvml — subprocess-free fallback; initialise once and reuse handle.
         if self._pynvml_ok is not False:
             try:
                 if self._pynvml_h is None:
-                    import pynvml  # type: ignore
-                    pynvml.nvmlInit()
-                    self._pynvml    = pynvml
-                    self._pynvml_h  = pynvml.nvmlDeviceGetHandleByIndex(0)
-                    self._pynvml_ok = True
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", category=FutureWarning)
+                        import pynvml  # type: ignore
+                        pynvml.nvmlInit()
+                        self._pynvml    = pynvml
+                        self._pynvml_h  = pynvml.nvmlDeviceGetHandleByIndex(0)
+                        self._pynvml_ok = True
                 return float(self._pynvml.nvmlDeviceGetUtilizationRates(self._pynvml_h).gpu)
             except Exception:
                 self._pynvml_ok = False
-
-        # Windows: nvml.dll via ctypes (already cached in _nvml_gpu_windows)
-        if _OS == "Windows":
-            return _nvml_gpu_windows()
 
         # Linux / macOS: libnvidia-ml shared lib via ctypes — init once, reuse
         try:
@@ -3977,14 +3983,22 @@ class AssistantWorkerWindow(QMainWindow):
             if _os == "Windows":
                 pythonw  = python.parent / "pythonw.exe"
                 target   = str(pythonw if pythonw.exists() else python)
-                lnk      = str(desktop / "J.A.R.V.I.S.lnk")
+                lnk      = str(desktop / "Assistant Worker.lnk")
+                legacy_lnk = desktop / "J.A.R.V.I.S.lnk"
+                if legacy_lnk.exists():
+                    try: legacy_lnk.unlink()
+                    except Exception: pass
                 icon_loc = str(ico_path) if ico_path.exists() else f"{target},0"
                 self._create_lnk_windows(lnk, target, str(script),
                                          str(script.parent), icon_loc)
 
             # ── macOS — proper .app bundle (no Terminal window) ───────────────
             elif _os == "Darwin":
-                app     = desktop / "J.A.R.V.I.S.app"
+                app     = desktop / "Assistant Worker.app"
+                legacy_app = desktop / "J.A.R.V.I.S.app"
+                if legacy_app.exists():
+                    try: import shutil; shutil.rmtree(legacy_app)
+                    except Exception: pass
                 mac_dir = app / "Contents" / "MacOS"
                 res_dir = app / "Contents" / "Resources"
                 mac_dir.mkdir(parents=True, exist_ok=True)
@@ -4009,8 +4023,8 @@ class AssistantWorkerWindow(QMainWindow):
                     '<plist version="1.0"><dict>\n'
                     '  <key>CFBundleExecutable</key><string>Assistant Worker</string>\n'
                     '  <key>CFBundleIdentifier</key>'
-                    '<string>com.jarvis.assistant</string>\n'
-                    '  <key>CFBundleName</key><string>J.A.R.V.I.S</string>\n'
+                    '<string>com.assistantworker.assistant</string>\n'
+                    '  <key>CFBundleName</key><string>Assistant Worker</string>\n'
                     '  <key>CFBundlePackageType</key><string>APPL</string>\n'
                     '  <key>CFBundleVersion</key><string>1.0</string>\n'
                     '</dict></plist>\n'
@@ -5306,10 +5320,13 @@ class AssistantWorkerWindow(QMainWindow):
                 finally:
                     winreg.CloseKey(key)
             elif _OS == "Darwin":
-                return (Path.home() / "Library" / "LaunchAgents"
-                        / "com.jarvis.assistant.plist").exists()
+                p1 = Path.home() / "Library" / "LaunchAgents" / "com.assistantworker.assistant.plist"
+                p2 = Path.home() / "Library" / "LaunchAgents" / "com.jarvis.assistant.plist"
+                return p1.exists() or p2.exists()
             else:
-                return (Path.home() / ".config" / "autostart" / "jarvis.desktop").exists()
+                d1 = Path.home() / ".config" / "autostart" / "assistantworker.desktop"
+                d2 = Path.home() / ".config" / "autostart" / "jarvis.desktop"
+                return d1.exists() or d2.exists()
         except Exception:
             return False
 
@@ -5332,16 +5349,19 @@ class AssistantWorkerWindow(QMainWindow):
             elif _OS == "Darwin":
                 plist_dir = Path.home() / "Library" / "LaunchAgents"
                 plist_dir.mkdir(parents=True, exist_ok=True)
-                plist = plist_dir / "com.jarvis.assistant.plist"
+                plist = plist_dir / "com.assistantworker.assistant.plist"
+                legacy_plist = plist_dir / "com.jarvis.assistant.plist"
                 if currently_on:
                     plist.unlink(missing_ok=True)
+                    legacy_plist.unlink(missing_ok=True)
                 else:
+                    legacy_plist.unlink(missing_ok=True)
                     plist.write_text(
                         '<?xml version="1.0" encoding="UTF-8"?>\n'
                         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
                         '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
                         '<plist version="1.0"><dict>\n'
-                        '  <key>Label</key><string>com.jarvis.assistant</string>\n'
+                        '  <key>Label</key><string>com.assistantworker.assistant</string>\n'
                         '  <key>ProgramArguments</key><array>\n'
                         f'    <string>{sys.executable}</string>\n'
                         f'    <string>{script}</string>\n'
@@ -5352,10 +5372,13 @@ class AssistantWorkerWindow(QMainWindow):
             else:
                 desk_dir = Path.home() / ".config" / "autostart"
                 desk_dir.mkdir(parents=True, exist_ok=True)
-                desk = desk_dir / "jarvis.desktop"
+                desk = desk_dir / "assistantworker.desktop"
+                legacy_desk = desk_dir / "jarvis.desktop"
                 if currently_on:
                     desk.unlink(missing_ok=True)
+                    legacy_desk.unlink(missing_ok=True)
                 else:
+                    legacy_desk.unlink(missing_ok=True)
                     desk.write_text(
                         "[Desktop Entry]\n"
                         f"Name={self._assistant_name}\n"
