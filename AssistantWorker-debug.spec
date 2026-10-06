@@ -13,6 +13,9 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH)
+sys.path.insert(0, str(ROOT))
+from scripts.build_support import isolate_native_search_path
+isolate_native_search_path()
 
 _icon = ROOT / "config" / "assistant_worker.ico"
 if not _icon.exists():

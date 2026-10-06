@@ -245,3 +245,35 @@ def test_legacy_screen_off_and_unrestricted_code_guard(monkeypatch):
     assert "disabled" in guarded_call("desktop_control", {"action": "task"}, lambda: calls.append(True))
     assert not calls
     assert guarded_call("browser_control", {"action": "search"}, lambda: "navigation requested") == "navigation requested"
+
+
+def test_screenshot_writes_verified_image_without_overwrite(tmp_path):
+    import io
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "navy").save(buffer, format="JPEG")
+    screen = engine()
+    screen.provider.context.screenshot = buffer.getvalue()
+    executor = ActionExecutor(screen, DesktopAdapter(screen))
+    target = tmp_path / "capture.png"
+    result = executor.execute(Action(ActionType.Screenshot, str(target)))
+    assert result.verified
+    with Image.open(target) as saved:
+        assert saved.format == "PNG" and saved.size == (8, 8)
+    assert executor.execute(Action(ActionType.Screenshot, str(target))).status == "failed"
+
+
+def test_clear_advances_context_generation():
+    screen = engine()
+    before = screen.generation
+    screen.clear()
+    assert screen.generation != before
+
+
+def test_pending_confirmation_cannot_be_replaced(monkeypatch):
+    from core import confirm
+    monkeypatch.setattr(confirm, "_pending", None)
+    monkeypatch.setattr(confirm, "_show_cb", lambda title, detail: None)
+    confirm.request("first", "First action", "", lambda: "first")
+    assert "already waiting" in confirm.request("second", "Second action", "", lambda: "second")
+    assert confirm.pending_title() == "First action"

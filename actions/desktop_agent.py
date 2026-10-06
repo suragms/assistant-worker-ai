@@ -35,7 +35,7 @@ TOOL = {
         "operation": {"type": "STRING", "enum": ["observe", "act", "request", "stop", "pause", "continue", "take over", "screen_off", "clear"]},
         "text": {"type": "STRING", "description": "A local file-context request: open Downloads, find the newest PDF, open it, move this file to Documents."},
         "action": {"type": "OBJECT", "properties": {
-            "type": {"type": "STRING", "enum": ["ReadScreen", "ReadWindow", "FindElement", "ClickElement", "SelectItem", "SetValue", "TypeText", "Scroll", "CloseApplication", "FocusWindow", "OpenApplication", "OpenURL", "CreateFolder", "CopyFile", "MoveFile", "RenameFile", "DeleteFile", "WaitForCondition", "BrowserNavigate", "BrowserClick", "BrowserType"]},
+            "type": {"type": "STRING", "enum": ["ReadScreen", "ReadWindow", "FindElement", "ClickElement", "SelectItem", "SetValue", "TypeText", "Scroll", "CloseApplication", "FocusWindow", "OpenApplication", "OpenURL", "CreateFolder", "CopyFile", "MoveFile", "RenameFile", "DeleteFile", "WaitForCondition", "BrowserNavigate", "BrowserClick", "BrowserType", "Screenshot"]},
             "target": {"type": "STRING"}, "reason": {"type": "STRING"},
             "arguments": {"type": "OBJECT", "properties": {
                 "text": {"type": "STRING"}, "destination": {"type": "STRING"},

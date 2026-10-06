@@ -19,7 +19,12 @@ def guarded_call(name, parameters, run):
             return "Screen context is off or protected. Enable sharing before interacting with the current screen."
     if name == "computer_control" and operation in ("screen_click", "screen_find", "click", "double_click", "right_click"):
         return "Use desktop_agent to observe and select a structured control before clicking. Blind coordinate actions are disabled."
-    if name == "computer_control" and operation in ("screenshot", "random_data", "user_data"):
+    if name in ("computer_control", "browser_control", "computer_settings") and operation == "screenshot":
+        from datetime import datetime
+        from pathlib import Path
+        target = parameters.get("path") or str(Path.home() / "Pictures" / f"AssistantWorker-{datetime.now():%Y%m%d-%H%M%S}.png")
+        return runtime.run({"type": "Screenshot", "target": target, "reason": "Save the requested screenshot"})
+    if name == "computer_control" and operation in ("random_data", "user_data"):
         return "Use screen_process for privacy-checked screen context. Missing personal information must be requested from the user."
     if name == "desktop_control" and operation not in ("list", "stats", "wallpaper", "wallpaper_url"):
         return "Use individual desktop_agent file actions with explicit paths; unrestricted generated desktop code is disabled."

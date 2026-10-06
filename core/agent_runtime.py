@@ -28,7 +28,7 @@ class DesktopAdapter:
     SUPPORTED = FILES | {"ReadScreen", "ReadWindow", "FindElement", "ClickElement", "SelectItem",
                         "SetValue", "TypeText", "Scroll", "CloseApplication", "FocusWindow",
                         "OpenApplication", "OpenURL", "WaitForCondition",
-                        "BrowserNavigate", "BrowserClick", "BrowserType"}
+                        "BrowserNavigate", "BrowserClick", "BrowserType", "Screenshot"}
     APPS = {"chrome": ("chrome.exe", "chrome"), "edge": ("msedge.exe", "msedge"),
             "notepad": ("notepad.exe", "notepad"), "calculator": ("calc.exe", "calculator"),
             "vs code": ("code", "code"), "vscode": ("code", "code"),
@@ -58,6 +58,9 @@ class DesktopAdapter:
             raise ValueError("Use an absolute local path.")
         if str(path).startswith("\\\\"):
             raise ValueError("Network paths are not supported by local file actions.")
+        for component in (path, *path.parents):
+            if component.is_symlink() or (hasattr(component, "is_junction") and component.is_junction()):
+                raise ValueError("Use the real local path; links and junctions are not accepted for file changes.")
         return path.resolve()
 
     def validate(self, action, context, element):
@@ -86,9 +89,23 @@ class DesktopAdapter:
             raise ValueError("Application not in the verified adapter registry.")
         if kind == "OpenURL" and urlparse(action.target).scheme not in ("http", "https"):
             raise ValueError("Only HTTP(S) URLs are accepted.")
+        if kind == "Screenshot":
+            path = self.path(action.target)
+            if path.exists() or not path.parent.is_dir() or path.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                raise ValueError("Choose a new PNG/JPEG file in an existing local folder.")
 
     def perform(self, action, context, element):
         kind = action.type.value
+        if kind == "Screenshot":
+            import io
+            from PIL import Image
+            capture = self.screen.observe(force=True, screenshot=True)
+            if not capture.screenshot or capture.window_handle != context.window_handle:
+                raise PermissionError("The shared window changed or its capture is protected.")
+            path = self.path(action.target)
+            with path.open("xb") as stream:
+                Image.open(io.BytesIO(capture.screenshot)).save(stream, format="PNG" if path.suffix.lower() == ".png" else "JPEG")
+            return {"path": str(path), "digest": file_digest(path)}
         if kind.startswith("Browser"):
             from core.browser_agent import perform
             return perform(action, context)
@@ -132,6 +149,9 @@ class DesktopAdapter:
 
     def verify(self, action, before, after, element, receipt):
         kind = action.type.value
+        if kind == "Screenshot":
+            path = Path(receipt["path"])
+            return path.is_file() and file_digest(path) == receipt["digest"]
         if kind in self.FILES:
             path = Path(receipt["path"])
             if kind == "DeleteFile":
@@ -195,11 +215,17 @@ class AgentRuntime:
                 callback(event)
             except RuntimeError:
                 self.listeners.remove(callback)  # A Qt window was destroyed.
+            except Exception:
+                import logging
+                logging.getLogger("assistant.agent").warning("Activity listener failed; execution policy remains active.")
 
     def set_scope(self, scope):
         self.screen.set_scope(scope)
         if self.screen.scope == ScreenScope.OFF:
             self.executor.control.stop()
+            if self._events:
+                self._events.stop()
+                self._events = None
         elif self._events is None:
             from core.windows_context import WindowEvents
             self._events = WindowEvents(self.screen.invalidate)

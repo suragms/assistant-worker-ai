@@ -14,6 +14,9 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH)   # repo root (where this .spec lives)
+sys.path.insert(0, str(ROOT))
+from scripts.build_support import isolate_native_search_path
+isolate_native_search_path()
 
 # ── Icon ──────────────────────────────────────────────────────────────────
 # Use new icon if available, fall back to legacy jarvis.ico
@@ -77,10 +80,8 @@ try:
 except Exception:
     pass
 
-try:
-    datas += collect_data_files("PyQt6")
-except Exception:
-    pass
+# PyInstaller's Qt hooks collect the used modules and plugins. Collecting all
+# PyQt6 data also drags in unrelated QML/SQL plugins and their native libraries.
 
 # ── Hidden imports ────────────────────────────────────────────────────────
 hiddenimports = [

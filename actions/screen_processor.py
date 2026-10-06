@@ -99,30 +99,12 @@ def _ensure_desktop_attached():
 
 
 def _capture_screen() -> tuple[bytes, str]:
-    _ensure_desktop_attached()
-
-    if _MSS:
-        try:
-            with mss.mss() as sct:
-                monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
-                target   = monitors[1] if len(monitors) > 1 else monitors[0]
-                shot     = sct.grab(target)
-                png      = mss.tools.to_png(shot.rgb, shot.size)
-            return _compress(png, "PNG")
-        except Exception as e:
-            print(f"[Vision] ⚠️  MSS capture failed ({e}), falling back to PIL.ImageGrab")
-
-    if _PIL:
-        try:
-            from PIL import ImageGrab
-            im = ImageGrab.grab()
-            buf = io.BytesIO()
-            im.save(buf, format="JPEG", quality=_JPEG_Q)
-            return buf.getvalue(), "image/jpeg"
-        except Exception as e:
-            print(f"[Vision] ⚠️  ImageGrab fallback failed: {e}")
-
-    raise RuntimeError("Screen capture failed: neither mss nor ImageGrab could capture the display.")
+    """Compatibility entry point; all captures obey the shared privacy policy."""
+    from core.agent_runtime import get_runtime
+    context = get_runtime().screen.observe(force=True, screenshot=True)
+    if not context.screenshot:
+        raise PermissionError("Screen sharing is off or this window is protected.")
+    return context.screenshot, "image/jpeg"
 
 
 def _cv2_backend() -> int:

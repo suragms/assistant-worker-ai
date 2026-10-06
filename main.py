@@ -1266,6 +1266,7 @@ class AssistantWorkerLive:
                     self._vision_last_time = _now
                     angle     = args.get("angle", "screen").lower()
                     user_text = args.get("text", "What do you see?")
+                    vision_generation = None
                     if angle == "camera":
                         img_b, mime_t = await loop.run_in_executor(None, _capture_camera)
                         self.ui.start_camera_stream()
@@ -1274,13 +1275,14 @@ class AssistantWorkerLive:
                         _stall = "camera"
                     else:
                         from core.agent_runtime import get_runtime
+                        vision_generation = get_runtime().screen.generation
                         context = await loop.run_in_executor(None, lambda: get_runtime().screen.observe(force=True, screenshot=True))
                         if not context.screenshot:
                             raise PermissionError("Screen sharing is off or protected. Enable Current window in Screen settings.")
                         img_b, mime_t = context.screenshot, "image/jpeg"
                         print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
-                    self._pending_vision = (img_b, mime_t, user_text, angle)
+                    self._pending_vision = (img_b, mime_t, user_text, angle, vision_generation)
                     # The image is attached to this same exchange, so there is
                     # nothing to stall for and nothing to announce. Asking for an
                     # acknowledgement here is what produced two spoken answers —
@@ -1545,11 +1547,11 @@ class AssistantWorkerLive:
             return False
 
         import base64 as _b64
-        img_b, mime_t, question, angle = self._pending_vision
+        img_b, mime_t, question, angle, generation = self._pending_vision
         self._pending_vision = None
         if angle != "camera":
             from core.agent_runtime import get_runtime
-            if get_runtime().screen.scope.value == "SCREEN OFF":
+            if get_runtime().screen.scope.value == "SCREEN OFF" or generation != get_runtime().screen.generation:
                 self._vision_busy = False
                 return False
         b64 = _b64.b64encode(img_b).decode("ascii")

@@ -113,16 +113,22 @@ class ScreenContextEngine:
         with self._lock:
             self._dirty = True
 
+    @property
+    def generation(self):
+        with self._lock:
+            return self._generation
+
     def observe(self, force=False, screenshot=False):
         with self._lock:
             scope, generation = self.scope, self._generation
             if scope == ScreenScope.OFF:
                 return ScreenContext(privacy_flags=["screen_off"])
-            if not force and not screenshot and not self._dirty and self._cache and time.monotonic()-self._at < 2:
+            if not force and not screenshot and not self._dirty and self._cache and time.monotonic()-self._at < 10:
                 return self._cache
-        if self.provider is None:
-            from core.windows_context import WindowsContextProvider
-            self.provider = WindowsContextProvider()
+        with self._lock:
+            if self.provider is None:
+                from core.windows_context import WindowsContextProvider
+                self.provider = WindowsContextProvider()
         result = self.provider.observe(scope, self.policy, screenshot=screenshot)
         with self._lock:
             # Stop/clear during a slow capture must discard the in-flight result.
